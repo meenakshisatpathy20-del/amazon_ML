@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Raw datasets
+data/raw/
+*.tsv
+
+# Generated datasets
+features/*.parquet
+features/*.duckdb
+features/duckdb_*/
+features/duckdb_blocking_tmp/
+features/duckdb_feature_tmp/
+
+# Outputs
+output/
+reports/
+
+# Temporary files
+*.tmp
+*.log
