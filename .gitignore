@@ -21,3 +21,9 @@ reports/
 # Temporary files
 *.tmp
 *.log
+
+# Local data and pipeline artifacts
+data/
+er/work/
+er/output/
+*.parquet
