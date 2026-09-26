@@ -148,6 +148,28 @@ def train(work, raw):
         print(f"  stage2 t={t:.3f} F0.5={res[round(float(t),3)]:.5f}", flush=True)
     bt = max(res, key=res.get)
     print("STAGE2 BEST", bt, res[bt], flush=True)
+    # precision / recall report at the chosen threshold
+    pred = {}
+    for a, b in fa.filter(pl.col("p2s") >= bt).select("iq", "i1").iter_rows():
+        pred.setdefault(b, set()).add(a)
+    tp_n = sum(len(pred.get(s, set()) & t) for s, t in truth.items())
+    pn = sum(len(v) for v in pred.values())
+    tn = sum(len(t) for t in truth.values())
+    mp, mr, ms = [], [], 0
+    for s_, t in truth.items():
+        pr_ = pred.get(s_, set())
+        if not t and not pr_:
+            mp.append(1.0); mr.append(1.0); ms += 1
+            continue
+        inter = len(pr_ & t)
+        mp.append(inter / len(pr_) if pr_ else 0.0)
+        mr.append(inter / len(t) if t else 0.0)
+    rep = {"macro_f05": res[bt], "macro_precision": float(np.mean(mp)), "macro_recall": float(np.mean(mr)),
+           "pair_precision": tp_n / pn, "pair_recall": tp_n / tn, "threshold": bt,
+           "eval_s1_entities": len(truth), "true_pairs": tn, "predicted_pairs": pn, "correct_pairs": tp_n,
+           "singletons_correct": ms, "singletons_total": sum(1 for t in truth.values() if not t)}
+    print("REPORT", json.dumps(rep, indent=1), flush=True)
+    json.dump(rep, open(f"{work}/eval_report.json", "w"), indent=1)
     m = lgb.train(PARAMS, lgb.Dataset(X, y), 500)
     m.save_model(f"{work}/model_s2.txt")
     json.dump({"threshold": bt, "f05": res[bt], "stage1": base}, open(f"{work}/stage2_meta.json", "w"))
