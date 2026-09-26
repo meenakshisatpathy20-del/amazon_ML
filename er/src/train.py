@@ -35,9 +35,7 @@ idq = q.select("iq", pl.col("entity_id").alias("q_id"))
 truth_pairs = truth_pairs.join(id1, on="s1_id").join(idq, on="q_id").select("iq", "i1")
 print("truth pairs", truth_pairs.height, f"{time.time()-t0:.0f}s", flush=True)
 
-pairs = block(s1, q, TOP_K)
-pairs.write_parquet(f"{WORK}/train_pairs.parquet")
-del_unused = None
+pairs = pl.read_parquet(f"{WORK}/train_pairs.parquet")
 print("blocked", pairs.height, f"{time.time()-t0:.0f}s", flush=True)
 
 # blocking recall on all train

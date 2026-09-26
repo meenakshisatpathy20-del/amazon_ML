@@ -15,9 +15,9 @@ def load_split(work, split):
     return s1, q
 
 
-def block(s1, q, top_k):
+def block(s1, q, top_k, out_dir=None):
     dfc, post = build_index(s1)
-    return candidates(q, dfc, post, top_k=top_k)
+    return candidates(q, dfc, post, top_k=top_k, out_dir=out_dir)
 
 
 def attach_text(pairs, s1, q):

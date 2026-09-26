@@ -18,12 +18,7 @@ TOP_K = meta["top_k"]
 t0 = time.time()
 
 s1, q = load_split(WORK, "test")
-try:
-    pairs = pl.read_parquet(f"{WORK}/test_pairs.parquet")
-    print("loaded cached test pairs", pairs.height, flush=True)
-except FileNotFoundError:
-    pairs = block(s1, q, TOP_K)
-    pairs.write_parquet(f"{WORK}/test_pairs.parquet")
+pairs = pl.read_parquet(f"{WORK}/test_pairs.parquet")
 print("blocked", pairs.height, f"{time.time()-t0:.0f}s", flush=True)
 
 model = lgb.Booster(model_file=f"{WORK}/model.txt")

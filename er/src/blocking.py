@@ -59,9 +59,15 @@ def build_index(s1: pl.DataFrame, chunk: int = 400_000):
 
 
 def candidates(q: pl.DataFrame, tdf: pl.DataFrame, post: pl.DataFrame,
-               top_k: int = TOP_K, chunk: int = 200_000) -> pl.DataFrame:
-    """q must have columns iq, country, core, addr, squash."""
+               top_k: int = TOP_K, chunk: int = 100_000, out_dir=None) -> pl.DataFrame:
+    """q must have columns iq, country, core, addr, squash.
+
+    With out_dir, each chunk is written to disk (bounded memory) and the
+    concatenated result is re-read at the end.
+    """
+    import os
     outs = []
+    n = 0
     for start in range(0, q.height, chunk):
         part = q.slice(start, chunk)
         pk = pair_keys(single_tokens(part, "iq"), "iq", tdf).unique()
@@ -70,8 +76,15 @@ def candidates(q: pl.DataFrame, tdf: pl.DataFrame, post: pl.DataFrame,
                                         pl.len().alias("bshared"))
         pairs = pairs.sort(["iq", "bscore", "i1"], descending=[False, True, False]) \
             .group_by("iq", maintain_order=True).head(top_k)
-        outs.append(pairs)
-        if (start // chunk) % 10 == 0:
-            print(f"  block {start + part.height}/{q.height} pairs={sum(o.height for o in outs)}",
-                  flush=True)
+        n += pairs.height
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+            pairs.write_parquet(f"{out_dir}/part_{start:09d}.parquet")
+        else:
+            outs.append(pairs)
+        del pk, part, pairs
+        if (start // chunk) % 20 == 0:
+            print(f"  block {min(start + chunk, q.height)}/{q.height} pairs={n}", flush=True)
+    if out_dir:
+        return pl.read_parquet(f"{out_dir}/part_*.parquet")
     return pl.concat(outs)
