@@ -21,7 +21,7 @@ from features import FEATURES, add_features
 WORK = sys.argv[1] if len(sys.argv) > 1 else "work"
 RAW = sys.argv[2] if len(sys.argv) > 2 else "../data/raw"
 TOP_K = int(sys.argv[3]) if len(sys.argv) > 3 else 8
-FRAC = 0.05
+FRAC = 0.04
 t0 = time.time()
 
 s1, q = load_split(WORK, "train")
@@ -57,9 +57,10 @@ qfold = truth_pairs.join(A, on="i1").select("iq", "fold")
 qfold2 = sub.join(A, on="i1").sort("bscore", descending=True).group_by("iq").first().select("iq", "fold")
 qfold = pl.concat([qfold, qfold2.join(qfold, on="iq", how="anti")])
 sub = sub.join(qfold, on="iq")
-sub = attach_text(sub, s1, q)
 print("train pairs", sub.height, "queries", qa.height, "pos", sub["y"].sum(), f"{time.time()-t0:.0f}s", flush=True)
-sub = add_features(sub)
+# features in 8 batches of whole queries (bounded memory)
+sub = pl.concat([add_features(attach_text(c, s1, q)).drop(["_qn", "_sn", "_qt", "_st", "_nu", "q_core", "s_core", "q_squash", "s_squash"]) for c in
+                 [sub.filter(pl.col("iq") % 8 == k) for k in range(8)]])
 print("features done", f"{time.time()-t0:.0f}s", flush=True)
 
 params = dict(objective="binary", learning_rate=0.08, num_leaves=127, min_data_in_leaf=100,

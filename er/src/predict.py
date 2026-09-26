@@ -23,7 +23,7 @@ print("blocked", pairs.height, f"{time.time()-t0:.0f}s", flush=True)
 
 model = lgb.Booster(model_file=f"{WORK}/model.txt")
 scored = []
-CH = 1_000_000
+CH = 300_000
 for start in range(0, q.height, CH):
     part = pairs.filter((pl.col("iq") >= start) & (pl.col("iq") < start + CH))
     if part.height == 0:
