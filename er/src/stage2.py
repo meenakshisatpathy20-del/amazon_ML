@@ -20,7 +20,47 @@ import numpy as np
 import polars as pl
 
 S2F = ["p1", "p2", "margin", "ncand_q", "o_n", "o_n50", "o_n90", "o_max", "o_mean",
-       "o_sum", "rank_in_s", "in_n", "in_sum", "in_max_other", "p1_minus_omax"]
+       "o_sum", "rank_in_s", "in_n", "in_sum", "in_max_other", "p1_minus_omax",
+       "an_n_tset", "an_c_ratio", "an_a_tset", "an_a_ratio", "an2_n_tset", "an2_a_tset",
+       "an_best_n", "an_best_a", "q_is_s3", "q_nonascii", "same_src_anchor"]
+S2F_BASE = S2F[:15]
+
+
+def anchor_features(f: pl.DataFrame, qtext: pl.DataFrame) -> pl.DataFrame:
+    """Compare each record with the two strongest OTHER records that chose the same S1."""
+    from rapidfuzz import fuzz, process
+    cp = lambda a, b, sc: process.cpdist(a, b, scorer=sc, workers=4, dtype=np.float32)
+    ranked = f.select("iq", "i1", "p1").sort(["i1", "p1", "iq"], descending=[False, True, False]) \
+        .with_columns(pl.int_range(pl.len()).over("i1").alias("_r"))
+    tops = ranked.filter(pl.col("_r") < 3).select("i1", "_r", pl.col("iq").alias("aq"))
+    # anchor 1/2 = best/second-best other record (skip self)
+    j = ranked.select("iq", "i1", "_r").join(tops, on="i1", suffix="_a").filter(pl.col("_r") != pl.col("_r_a")) \
+        .sort(["iq", "_r_a"]).with_columns(pl.int_range(pl.len()).over("iq").alias("k")).filter(pl.col("k") < 2)
+    t = qtext.select("iq", "name", "core", "addr", "q_is_s3")
+    j = j.join(t, on="iq").join(t.rename({"iq": "aq", "name": "a_name", "core": "a_core", "addr": "a_addr",
+                                          "q_is_s3": "a_s3"}), on="aq")
+    j = j.with_columns(
+        pl.Series("n_tset", cp(j["name"].to_list(), j["a_name"].to_list(), fuzz.token_set_ratio)),
+        pl.Series("c_ratio", cp(j["core"].to_list(), j["a_core"].to_list(), fuzz.ratio)),
+        pl.Series("a_tset", cp(j["addr"].to_list(), j["a_addr"].to_list(), fuzz.token_set_ratio)),
+        pl.Series("a_ratio", cp(j["addr"].to_list(), j["a_addr"].to_list(), fuzz.ratio)),
+        (pl.col("q_is_s3") == pl.col("a_s3")).cast(pl.Float32).alias("same_src"))
+    a1 = j.filter(pl.col("k") == 0).select("iq", pl.col("n_tset").alias("an_n_tset"),
+                                            pl.col("c_ratio").alias("an_c_ratio"), pl.col("a_tset").alias("an_a_tset"),
+                                            pl.col("a_ratio").alias("an_a_ratio"), pl.col("same_src").alias("same_src_anchor"))
+    a2 = j.filter(pl.col("k") == 1).select("iq", pl.col("n_tset").alias("an2_n_tset"), pl.col("a_tset").alias("an2_a_tset"))
+    f = f.join(a1, on="iq", how="left").join(a2, on="iq", how="left") \
+        .join(qtext.select("iq", pl.col("q_is_s3").cast(pl.Float32), pl.col("name_nonascii").cast(pl.Float32).alias("q_nonascii")), on="iq")
+    return f.with_columns(
+        pl.max_horizontal("an_n_tset", "an2_n_tset").alias("an_best_n"),
+        pl.max_horizontal("an_a_tset", "an2_a_tset").alias("an_best_a"))
+
+
+def load_qtext(work, split):
+    return pl.concat([
+        pl.read_parquet(f"{work}/{split}_source2.parquet").with_columns(pl.lit(0, pl.Int8).alias("q_is_s3")),
+        pl.read_parquet(f"{work}/{split}_source3.parquet").with_columns(pl.lit(1, pl.Int8).alias("q_is_s3")),
+    ]).with_row_index("iq").select("iq", "name", "core", "addr", "q_is_s3", "name_nonascii")
 
 
 def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
@@ -53,7 +93,7 @@ def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
                                     pl.col("p").sum().alias("in_sum"))
     q = q.join(inc, on="i1").with_columns(
         (pl.col("in_sum") - pl.col("p1")).alias("in_max_other"))
-    return q.select("iq", "i1", *S2F)
+    return q.select("iq", "i1", *S2F_BASE)
 
 
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=63, min_data_in_leaf=200,
@@ -66,13 +106,14 @@ def train(work, raw):
     oof = pl.read_parquet(f"{work}/oof.parquet")
     fold = oof.group_by("iq").agg(pl.col("fold").first())
     lab = oof.select("iq", "i1", "y")
-    f = s2_features(oof.select("iq", "i1", "p")).join(fold, on="iq") \
+    f = s2_features(oof.select("iq", "i1", "p"))
+    f = anchor_features(f, load_qtext(work, "train")).join(fold, on="iq") \
         .join(lab, on=["iq", "i1"], how="left").with_columns(pl.col("y").fill_null(0))
     X = f.select(S2F).to_numpy().astype(np.float32)
     y, fo = f["y"].to_numpy(), f["fold"].to_numpy()
     pr = np.zeros(len(y), dtype=np.float32)
     for k in (0, 1):
-        m = lgb.train(PARAMS, lgb.Dataset(X[fo != k], y[fo != k]), 300)
+        m = lgb.train(PARAMS, lgb.Dataset(X[fo != k], y[fo != k]), 500)
         pr[fo == k] = m.predict(X[fo == k])
     f = f.with_columns(pl.Series("p2s", pr))
 
@@ -102,12 +143,12 @@ def train(work, raw):
     base = {round(t, 3): score("p1", t) for t in (0.6, 0.65, 0.7)}
     print("stage-1 only:", base, flush=True)
     res = {}
-    for t in np.arange(0.30, 0.91, 0.025):
+    for t in np.arange(0.50, 0.931, 0.02):
         res[round(float(t), 3)] = score("p2s", t)
         print(f"  stage2 t={t:.3f} F0.5={res[round(float(t),3)]:.5f}", flush=True)
     bt = max(res, key=res.get)
     print("STAGE2 BEST", bt, res[bt], flush=True)
-    m = lgb.train(PARAMS, lgb.Dataset(X, y), 300)
+    m = lgb.train(PARAMS, lgb.Dataset(X, y), 500)
     m.save_model(f"{work}/model_s2.txt")
     json.dump({"threshold": bt, "f05": res[bt], "stage1": base}, open(f"{work}/stage2_meta.json", "w"))
 
@@ -115,7 +156,7 @@ def train(work, raw):
 def apply(work, out):
     meta = json.load(open(f"{work}/stage2_meta.json"))
     scored = pl.read_parquet(f"{work}/test_scored.parquet")
-    f = s2_features(scored)
+    f = anchor_features(s2_features(scored), load_qtext(work, "test"))
     m = lgb.Booster(model_file=f"{work}/model_s2.txt")
     f = f.with_columns(pl.Series("p2s", m.predict(f.select(S2F).to_numpy().astype(np.float32))))
     acc = f.filter(pl.col("p2s") >= meta["threshold"]).select("iq", "i1")
