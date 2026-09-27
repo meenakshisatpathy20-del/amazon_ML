@@ -165,6 +165,13 @@ def train(work, raw):
         f = anchor_features(f, load_qtext(work, SPLIT)).join(fold, on="iq") \
             .join(lab, on=["iq", "i1"], how="left").with_columns(pl.col("y").fill_null(0))
         f.write_parquet(cache)
+    # rebuild the evaluation universe exactly as train.py did
+    s1 = pl.read_parquet(f"{work}/{SPLIT}_source1.parquet").with_row_index("i1")
+    rng = np.random.default_rng(0)
+    A = s1.select("i1").filter(pl.Series(rng.random(s1.height) < json.load(open(f"{work}/train_meta.json"))["frac"]))
+    # train only on records whose chosen S1 is fully sampled (complete sibling sets, as on test)
+    f = f.join(A, on="i1", how="semi")
+    print("stage-2 training rows (complete clusters):", f.height, flush=True)
     X = f.select(S2F).to_numpy().astype(np.float32)
     y, fo = f["y"].to_numpy(), f["fold"].to_numpy()
     pr = np.zeros(len(y), dtype=np.float32)
@@ -172,10 +179,6 @@ def train(work, raw):
         pr[fo == k] = fit_predict(X[fo != k], y[fo != k], X[fo == k])
     f = f.with_columns(pl.Series("p2s", pr))
 
-    # rebuild the evaluation universe exactly as train.py did
-    s1 = pl.read_parquet(f"{work}/{SPLIT}_source1.parquet").with_row_index("i1")
-    rng = np.random.default_rng(0)
-    A = s1.select("i1").filter(pl.Series(rng.random(s1.height) < json.load(open(f"{work}/train_meta.json"))["frac"]))
     q = pl.concat([pl.read_parquet(f"{work}/{SPLIT}_source2.parquet").select("entity_id"),
                    pl.read_parquet(f"{work}/{SPLIT}_source3.parquet").select("entity_id")]).with_row_index("iq")
     gt = pl.read_csv(f"{raw}/train/train_ground_truth.tsv", separator="\t", quote_char=None,
