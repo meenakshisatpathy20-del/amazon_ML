@@ -22,19 +22,26 @@ pairs = pl.read_parquet(f"{WORK}/test_pairs.parquet")
 print("blocked", pairs.height, f"{time.time()-t0:.0f}s", flush=True)
 
 model = lgb.Booster(model_file=f"{WORK}/model.txt")
-scored = []
+import os
+PART_DIR = f"{WORK}/test_scored_parts"
+os.makedirs(PART_DIR, exist_ok=True)
+PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset", "hn_logdiff", "hn_small_off", "hn_trunc", "hn_same", "extra_q_tok"]
 CH = 300_000
 for start in range(0, q.height, CH):
+    out = f"{PART_DIR}/part_{start:09d}.parquet"
+    if os.path.exists(out):          # resumable
+        continue
     part = pairs.filter((pl.col("iq") >= start) & (pl.col("iq") < start + CH))
     if part.height == 0:
         continue
     part = add_features(attach_text(part, s1, q))
     p = model.predict(part.select(FEATURES).to_numpy().astype(np.float32), num_threads=4)
-    PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset", "hn_logdiff", "hn_small_off", "hn_trunc", "hn_same", "extra_q_tok"]
-    scored.append(part.select("iq", "i1", *PF).with_columns(pl.Series("p", p.astype(np.float32))))
+    part.select("iq", "i1", *PF).with_columns(pl.Series("p", p.astype(np.float32))).write_parquet(out)
+    del part, p
     print(f"  scored queries<{start+CH}  {time.time()-t0:.0f}s", flush=True)
-scored = pl.concat(scored)
-scored.write_parquet(f"{WORK}/test_scored.parquet")
+del pairs
+scored = pl.read_parquet(f"{PART_DIR}/part_*.parquet", columns=["iq", "i1", "p"])
+pl.scan_parquet(f"{PART_DIR}/part_*.parquet").sink_parquet(f"{WORK}/test_scored.parquet")
 
 best = scored.sort(["p", "i1"], descending=[True, False]).group_by("iq").first()
 acc = best.filter(pl.col("p") >= THR)
