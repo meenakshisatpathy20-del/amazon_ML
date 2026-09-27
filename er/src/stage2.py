@@ -29,6 +29,9 @@ S2F = ["p1", "p2", "margin", "ncand_q", "o_n", "o_n50", "o_n90", "o_max", "o_mea
 S2F_BASE = S2F[:15]
 PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset"]
 S2F = S2F + ["b_" + c for c in PF] + ["r_" + c for c in PF]
+# in_n counts every candidate pair pointing at the S1; the training sample only sees part of
+# them (80 vs 45 on average), so it is excluded to avoid a train/test shift
+S2F = [c for c in S2F if c != "in_n"]
 
 
 def anchor_features(f: pl.DataFrame, qtext: pl.DataFrame) -> pl.DataFrame:
