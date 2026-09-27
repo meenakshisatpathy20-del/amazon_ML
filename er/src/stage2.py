@@ -23,37 +23,65 @@ import polars as pl
 S2F = ["p1", "p2", "margin", "ncand_q", "o_n", "o_n50", "o_n90", "o_max", "o_mean",
        "o_sum", "rank_in_s", "in_n", "in_sum", "in_max_other", "p1_minus_omax",
        "an_n_tset", "an_c_ratio", "an_a_tset", "an_a_ratio", "an2_n_tset", "an2_a_tset",
-       "an_best_n", "an_best_a", "q_is_s3", "q_nonascii", "same_src_anchor"]
+       "an_best_n", "an_best_a", "q_is_s3", "q_nonascii", "same_src_anchor",
+       "an_sk_max", "an_num_max", "an_n_mean", "an_a_mean", "an_n_agree", "an_a_agree", "an_cnt",
+       "q_noaddr", "q_corelen", "an_w_nagree", "an_w_aagree", "an_w_sim", "an_w_tot", "an_same_src_agree"]
 S2F_BASE = S2F[:15]
 PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset"]
 S2F = S2F + ["b_" + c for c in PF] + ["r_" + c for c in PF]
 
 
 def anchor_features(f: pl.DataFrame, qtext: pl.DataFrame) -> pl.DataFrame:
-    """Compare each record with the two strongest OTHER records that chose the same S1."""
+    """Compare each record with the three strongest OTHER records that chose the same S1."""
     from rapidfuzz import fuzz, process
+    from features import _skel
     cp = lambda a, b, sc: process.cpdist(a, b, scorer=sc, workers=4, dtype=np.float32)
     ranked = f.select("iq", "i1", "p1").sort(["i1", "p1", "iq"], descending=[False, True, False]) \
         .with_columns(pl.int_range(pl.len()).over("i1").alias("_r"))
-    tops = ranked.filter(pl.col("_r") < 3).select("i1", "_r", pl.col("iq").alias("aq"))
-    # anchor 1/2 = best/second-best other record (skip self)
+    tops = ranked.filter(pl.col("_r") < 9).select("i1", "_r", pl.col("iq").alias("aq"))
     j = ranked.select("iq", "i1", "_r").join(tops, on="i1", suffix="_a").filter(pl.col("_r") != pl.col("_r_a")) \
-        .sort(["iq", "_r_a"]).with_columns(pl.int_range(pl.len()).over("iq").alias("k")).filter(pl.col("k") < 2)
-    t = qtext.select("iq", "name", "core", "addr", "q_is_s3")
-    j = j.join(t, on="iq").join(t.rename({"iq": "aq", "name": "a_name", "core": "a_core", "addr": "a_addr",
-                                          "q_is_s3": "a_s3"}), on="aq")
-    j = j.with_columns(
-        pl.Series("n_tset", cp(j["name"].to_list(), j["a_name"].to_list(), fuzz.token_set_ratio)),
-        pl.Series("c_ratio", cp(j["core"].to_list(), j["a_core"].to_list(), fuzz.ratio)),
-        pl.Series("a_tset", cp(j["addr"].to_list(), j["a_addr"].to_list(), fuzz.token_set_ratio)),
-        pl.Series("a_ratio", cp(j["addr"].to_list(), j["a_addr"].to_list(), fuzz.ratio)),
-        (pl.col("q_is_s3") == pl.col("a_s3")).cast(pl.Float32).alias("same_src"))
+        .sort(["iq", "_r_a"]).with_columns(pl.int_range(pl.len()).over("iq").alias("k")).filter(pl.col("k") < 8) \
+        .select("iq", "aq", "k").join(f.select(pl.col("iq").alias("aq"), pl.col("p1").alias("ap")), on="aq")
+    t = qtext.select("iq", "name", "core", "addr", "q_is_s3", _skel("core").alias("sk"))
+    ta = t.rename({"iq": "aq", "name": "a_name", "core": "a_core", "addr": "a_addr", "q_is_s3": "a_s3", "sk": "a_sk"})
+    parts = []
+    CH = 4_000_000
+    for st in range(0, j.height, CH):
+        c = j.slice(st, CH).join(t, on="iq").join(ta, on="aq")
+        c = c.with_columns(
+            pl.Series("n_tset", cp(c["name"].to_list(), c["a_name"].to_list(), fuzz.token_set_ratio)),
+            pl.Series("c_ratio", cp(c["core"].to_list(), c["a_core"].to_list(), fuzz.ratio)),
+            pl.Series("sk_ratio", cp(c["sk"].to_list(), c["a_sk"].to_list(), fuzz.ratio)),
+            pl.Series("a_tset", cp(c["addr"].to_list(), c["a_addr"].to_list(), fuzz.token_set_ratio)),
+            pl.Series("a_ratio", cp(c["addr"].to_list(), c["a_addr"].to_list(), fuzz.ratio)),
+            (pl.col("q_is_s3") == pl.col("a_s3")).cast(pl.Float32).alias("same_src"),
+            pl.col("addr").str.extract_all(r"\d+").list.unique().alias("_n1"),
+            pl.col("a_addr").str.extract_all(r"\d+").list.unique().alias("_n2"),
+        ).with_columns(
+            (pl.col("_n1").list.set_intersection("_n2").list.len()
+             / pl.col("_n1").list.set_union("_n2").list.len().clip(1)).cast(pl.Float32).alias("num_jac"))
+        parts.append(c.select("iq", "k", "ap", "n_tset", "c_ratio", "sk_ratio", "a_tset", "a_ratio", "same_src", "num_jac"))
+        del c
+    j = pl.concat(parts)
     a1 = j.filter(pl.col("k") == 0).select("iq", pl.col("n_tset").alias("an_n_tset"),
                                             pl.col("c_ratio").alias("an_c_ratio"), pl.col("a_tset").alias("an_a_tset"),
                                             pl.col("a_ratio").alias("an_a_ratio"), pl.col("same_src").alias("same_src_anchor"))
     a2 = j.filter(pl.col("k") == 1).select("iq", pl.col("n_tset").alias("an2_n_tset"), pl.col("a_tset").alias("an2_a_tset"))
-    f = f.join(a1, on="iq", how="left").join(a2, on="iq", how="left") \
-        .join(qtext.select("iq", pl.col("q_is_s3").cast(pl.Float32), pl.col("name_nonascii").cast(pl.Float32).alias("q_nonascii")), on="iq")
+    ag = j.group_by("iq").agg(
+        pl.col("sk_ratio").max().alias("an_sk_max"), pl.col("num_jac").max().alias("an_num_max"),
+        pl.col("n_tset").mean().alias("an_n_mean"), pl.col("a_tset").mean().alias("an_a_mean"),
+        ((pl.col("n_tset") >= 80) | (pl.col("sk_ratio") >= 80)).sum().cast(pl.Float32).alias("an_n_agree"),
+        (pl.col("a_tset") >= 80).sum().cast(pl.Float32).alias("an_a_agree"),
+        pl.len().cast(pl.Float32).alias("an_cnt"),
+        (pl.col("ap") * ((pl.col("n_tset") >= 80) | (pl.col("sk_ratio") >= 80))).sum().alias("an_w_nagree"),
+        (pl.col("ap") * (pl.col("a_tset") >= 80)).sum().alias("an_w_aagree"),
+        (pl.col("ap") * (pl.col("n_tset") + pl.col("a_tset"))).sum().alias("an_w_sim"),
+        pl.col("ap").sum().alias("an_w_tot"),
+        (pl.col("same_src") * (pl.col("n_tset") >= 80)).sum().cast(pl.Float32).alias("an_same_src_agree"))
+    f = f.join(a1, on="iq", how="left").join(a2, on="iq", how="left").join(ag, on="iq", how="left") \
+        .join(qtext.select("iq", pl.col("q_is_s3").cast(pl.Float32), pl.col("name_nonascii").cast(pl.Float32).alias("q_nonascii"),
+                           (pl.col("addr") == "").cast(pl.Float32).alias("q_noaddr"),
+                           pl.col("core").str.len_chars().cast(pl.Float32).alias("q_corelen")), on="iq")
     return f.with_columns(
         pl.max_horizontal("an_n_tset", "an2_n_tset").alias("an_best_n"),
         pl.max_horizontal("an_a_tset", "an2_a_tset").alias("an_best_a"))
