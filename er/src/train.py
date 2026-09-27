@@ -9,6 +9,7 @@
 """
 import json
 import sys
+import os
 import time
 
 import lightgbm as lgb
@@ -21,10 +22,11 @@ from features import FEATURES, add_features
 WORK = sys.argv[1] if len(sys.argv) > 1 else "work"
 RAW = sys.argv[2] if len(sys.argv) > 2 else "../data/raw"
 TOP_K = int(sys.argv[3]) if len(sys.argv) > 3 else 8
-FRAC = 0.04
+FRAC = 0.05
+SPLIT = os.environ.get("SPLIT", "train")
 t0 = time.time()
 
-s1, q = load_split(WORK, "train")
+s1, q = load_split(WORK, SPLIT)
 gt = pl.read_csv(f"{RAW}/train/train_ground_truth.tsv", separator="\t", quote_char=None,
                  infer_schema=False)
 gt = gt.with_columns(pl.col("matched_entity_ids").fill_null("").str.split(","))
@@ -35,7 +37,7 @@ idq = q.select("iq", pl.col("entity_id").alias("q_id"))
 truth_pairs = truth_pairs.join(id1, on="s1_id").join(idq, on="q_id").select("iq", "i1")
 print("truth pairs", truth_pairs.height, f"{time.time()-t0:.0f}s", flush=True)
 
-pairs = pl.read_parquet(f"{WORK}/train_pairs.parquet")
+pairs = pl.read_parquet(f"{WORK}/{SPLIT}_pairs.parquet")
 print("blocked", pairs.height, f"{time.time()-t0:.0f}s", flush=True)
 
 # blocking recall on all train
@@ -99,7 +101,7 @@ m = lgb.train(params, lgb.Dataset(X, y), num_boost_round=400)
 m.save_model(f"{WORK}/model.txt")
 imp = sorted(zip(FEATURES, m.feature_importance("gain")), key=lambda x: -x[1])
 print("importance", [(a, int(b)) for a, b in imp[:15]])
-json.dump({"threshold": bt, "oof": res, "top_k": TOP_K}, open(f"{WORK}/train_meta.json", "w"), indent=1)
+json.dump({"threshold": bt, "oof": res, "top_k": TOP_K, "split": SPLIT, "frac": FRAC}, open(f"{WORK}/train_meta.json", "w"), indent=1)
 sub.select("iq", "i1", "y", "p", "fold", "q_name", "q_addr", "s_name", "s_addr") \
     .write_parquet(f"{WORK}/oof.parquet")
 print("done", f"{time.time()-t0:.0f}s")

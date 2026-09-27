@@ -13,6 +13,7 @@ Usage:
   python stage2.py apply WORK OUT       # rewrite output/matching_results.tsv for test
 """
 import json
+import os
 import sys
 
 import lightgbm as lgb
@@ -96,6 +97,8 @@ def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
     return q.select("iq", "i1", *S2F_BASE)
 
 
+SPLIT = os.environ.get("SPLIT", "train")
+
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=63, min_data_in_leaf=200,
               feature_fraction=0.9, bagging_fraction=0.8, bagging_freq=1, verbose=-1,
               num_threads=4, seed=1)
@@ -107,7 +110,7 @@ def train(work, raw):
     fold = oof.group_by("iq").agg(pl.col("fold").first())
     lab = oof.select("iq", "i1", "y")
     f = s2_features(oof.select("iq", "i1", "p"))
-    f = anchor_features(f, load_qtext(work, "train")).join(fold, on="iq") \
+    f = anchor_features(f, load_qtext(work, SPLIT)).join(fold, on="iq") \
         .join(lab, on=["iq", "i1"], how="left").with_columns(pl.col("y").fill_null(0))
     X = f.select(S2F).to_numpy().astype(np.float32)
     y, fo = f["y"].to_numpy(), f["fold"].to_numpy()
@@ -118,11 +121,11 @@ def train(work, raw):
     f = f.with_columns(pl.Series("p2s", pr))
 
     # rebuild the evaluation universe exactly as train.py did
-    s1 = pl.read_parquet(f"{work}/train_source1.parquet").with_row_index("i1")
+    s1 = pl.read_parquet(f"{work}/{SPLIT}_source1.parquet").with_row_index("i1")
     rng = np.random.default_rng(0)
-    A = s1.select("i1").filter(pl.Series(rng.random(s1.height) < 0.04))
-    q = pl.concat([pl.read_parquet(f"{work}/train_source2.parquet").select("entity_id"),
-                   pl.read_parquet(f"{work}/train_source3.parquet").select("entity_id")]).with_row_index("iq")
+    A = s1.select("i1").filter(pl.Series(rng.random(s1.height) < json.load(open(f"{work}/train_meta.json"))["frac"]))
+    q = pl.concat([pl.read_parquet(f"{work}/{SPLIT}_source2.parquet").select("entity_id"),
+                   pl.read_parquet(f"{work}/{SPLIT}_source3.parquet").select("entity_id")]).with_row_index("iq")
     gt = pl.read_csv(f"{raw}/train/train_ground_truth.tsv", separator="\t", quote_char=None,
                      infer_schema=False).with_columns(pl.col("matched_entity_ids").fill_null("").str.split(","))
     tp = gt.explode("matched_entity_ids").filter(pl.col("matched_entity_ids") != "") \
