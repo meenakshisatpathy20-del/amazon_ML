@@ -68,7 +68,8 @@ def load_qtext(work, split):
 
 def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
     """scored: iq, i1, p for every candidate pair -> one row per query (its best S1)."""
-    s = scored.sort(["iq", "p"], descending=[False, True])
+    has_pf = all(c in scored.columns for c in PF)
+    s = scored.select("iq", "i1", "p").sort(["iq", "p"], descending=[False, True])
     q = s.group_by("iq", maintain_order=True).agg(
         pl.col("i1").first(), pl.col("p").first().alias("p1"),
         pl.col("p").get(1, null_on_oob=True).fill_null(0.0).alias("p2"),
@@ -97,7 +98,8 @@ def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
     q = q.join(inc, on="i1").with_columns(
         (pl.col("in_sum") - pl.col("p1")).alias("in_max_other"))
     # stage-1 pair features of the best and runner-up candidates
-    s = s.with_columns(pl.int_range(pl.len()).over("iq").alias("_rk"))
+    s = scored.with_columns(pl.col("p").rank("ordinal", descending=True).over("iq").alias("_rk")) \
+        .filter(pl.col("_rk") <= 2).with_columns(pl.col("_rk") - 1)
     b = s.filter(pl.col("_rk") == 0).select("iq", *[pl.col(c).alias("b_" + c) for c in PF])
     r = s.filter(pl.col("_rk") == 1).select("iq", *[pl.col(c).alias("r_" + c) for c in PF])
     q = q.join(b, on="iq").join(r, on="iq", how="left")
@@ -187,8 +189,11 @@ def train(work, raw):
 
 def apply(work, out):
     meta = json.load(open(f"{work}/stage2_meta.json"))
-    scored = pl.read_parquet(f"{work}/test_scored.parquet")
-    f = anchor_features(s2_features(scored), load_qtext(work, "test"))
+    scored = pl.read_parquet(f"{work}/test_scored.parquet", columns=["iq", "i1", "p", *PF])
+    f = s2_features(scored)
+    del scored
+    import gc; gc.collect()
+    f = anchor_features(f, load_qtext(work, "test"))
     m = lgb.Booster(model_file=f"{work}/model_s2.txt")
     f = f.with_columns(pl.Series("p2s", m.predict(f.select(S2F).to_numpy().astype(np.float32))))
     acc = f.filter(pl.col("p2s") >= meta["threshold"]).select("iq", "i1")
