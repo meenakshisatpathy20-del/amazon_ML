@@ -22,7 +22,7 @@ from features import FEATURES, add_features
 WORK = sys.argv[1] if len(sys.argv) > 1 else "work"
 RAW = sys.argv[2] if len(sys.argv) > 2 else "../data/raw"
 TOP_K = int(sys.argv[3]) if len(sys.argv) > 3 else 8
-FRAC = 0.05
+FRAC = 0.06
 SPLIT = os.environ.get("SPLIT", "train")
 t0 = time.time()
 

@@ -14,7 +14,17 @@ FEATURES = [
     "num_jac", "num_inter", "num_first_eq", "q_num_n", "s_num_n",
     "q_addr_empty", "s_addr_empty", "q_nonascii", "q_is_s3",
     "q_core_len", "s_core_len", "core_len_ratio", "s_name_freq", "tok_jac",
+    "sk_ratio", "sk_tset", "aa_tset",
+    "rel_n_tset", "rel_a_tset", "rel_c_ratio", "rel_num_jac", "rel_sk_ratio",
+    "top_n_tset", "top_a_tset", "n_both",
 ]
+
+
+def _skel(col):
+    """Consonant skeleton: robust to transliteration vowel noise (knsltensi ~ consultancy)."""
+    e = pl.col(col).str.replace_all("ph", "f").str.replace_all("[cq]", "k").str.replace_all("z", "s") \
+        .str.replace_all("v", "w").str.replace_all("[aeiouyh]", "")
+    return e
 
 
 def _cp(a, b, scorer):
@@ -79,4 +89,20 @@ def add_features(p: pl.DataFrame) -> pl.DataFrame:
         (pl.min_horizontal("q_core_len", "s_core_len")
          / pl.max_horizontal("q_core_len", "s_core_len").clip(1)).alias("core_len_ratio"),
     )
+    p = p.with_columns(_skel("q_core").alias("_qk"), _skel("s_core").alias("_sk"),
+                       pl.col("q_addr").str.replace_all(r"\d+", " ").str.strip_chars().alias("_qaa"),
+                       pl.col("s_addr").str.replace_all(r"\d+", " ").str.strip_chars().alias("_saa"))
+    p = p.with_columns(
+        pl.Series("sk_ratio", _cp(p["_qk"].to_list(), p["_sk"].to_list(), fuzz.ratio)),
+        pl.Series("sk_tset", _cp(p["_qk"].to_list(), p["_sk"].to_list(), fuzz.token_set_ratio)),
+        pl.Series("aa_tset", _cp(p["_qaa"].to_list(), p["_saa"].to_list(), fuzz.token_set_ratio)),
+    ).drop(["_qk", "_sk", "_qaa", "_saa"])
+    # how this candidate compares with the query's best other candidate
+    rel = {}
+    for c in ("n_tset", "a_tset", "c_ratio", "num_jac", "sk_ratio"):
+        rel[f"rel_{c}"] = pl.col(c) - pl.col(c).max().over("iq")
+    p = p.with_columns(**rel).with_columns(
+        (pl.col("rel_n_tset") >= 0).cast(pl.Float32).alias("top_n_tset"),
+        (pl.col("rel_a_tset") >= 0).cast(pl.Float32).alias("top_a_tset"),
+        ((pl.col("n_tset") >= 85) & (pl.col("a_tset") >= 85)).cast(pl.Float32).alias("n_both"))
     return p
