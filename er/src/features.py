@@ -17,6 +17,8 @@ FEATURES = [
     "sk_ratio", "sk_tset", "aa_tset",
     "rel_n_tset", "rel_a_tset", "rel_c_ratio", "rel_num_jac", "rel_sk_ratio",
     "top_n_tset", "top_a_tset", "n_both",
+    "hn_logdiff", "hn_small_off", "hn_trunc", "hn_same", "hn_missing", "rel_hn_same",
+    "extra_q_tok", "extra_s_tok",
 ]
 
 
@@ -97,6 +99,25 @@ def add_features(p: pl.DataFrame) -> pl.DataFrame:
         pl.Series("sk_tset", _cp(p["_qk"].to_list(), p["_sk"].to_list(), fuzz.token_set_ratio)),
         pl.Series("aa_tset", _cp(p["_qaa"].to_list(), p["_saa"].to_list(), fuzz.token_set_ratio)),
     ).drop(["_qk", "_sk", "_qaa", "_saa"])
+    # house-number relation: truncation (6651 -> 651) is noise on true matches, while a small
+    # offset (16921 vs 16910) is the signature of a neighbouring look-alike business
+    qn = pl.col("q_addr").str.extract(r"(\d+)")
+    sn = pl.col("s_addr").str.extract(r"(\d+)")
+    qi, si = qn.cast(pl.Int64, strict=False), sn.cast(pl.Int64, strict=False)
+    d = (qi - si).abs()
+    p = p.with_columns(
+        pl.when(d.is_null()).then(-1.0).otherwise((d.cast(pl.Float64) + 1).log()).cast(pl.Float32).alias("hn_logdiff"),
+        ((d >= 1) & (d <= 30)).fill_null(False).cast(pl.Float32).alias("hn_small_off"),
+        ((qn != sn) & (sn.str.ends_with(qn) | qn.str.ends_with(sn) | sn.str.starts_with(qn) | qn.str.starts_with(sn)))
+        .fill_null(False).cast(pl.Float32).alias("hn_trunc"),
+        (qn == sn).fill_null(False).cast(pl.Float32).alias("hn_same"),
+        (qn.is_null() | sn.is_null()).cast(pl.Float32).alias("hn_missing"),
+        (pl.col("q_core").str.split(" ").list.set_difference(pl.col("s_core").str.split(" ")).list.len()
+         .cast(pl.Float32).alias("extra_q_tok")),
+        (pl.col("s_core").str.split(" ").list.set_difference(pl.col("q_core").str.split(" ")).list.len()
+         .cast(pl.Float32).alias("extra_s_tok")),
+    )
+    p = p.with_columns((pl.col("hn_same") - pl.col("hn_same").max().over("iq")).alias("rel_hn_same"))
     # how this candidate compares with the query's best other candidate
     rel = {}
     for c in ("n_tset", "a_tset", "c_ratio", "num_jac", "sk_ratio"):

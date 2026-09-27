@@ -71,7 +71,7 @@ params = dict(objective="binary", learning_rate=0.06, num_leaves=127, min_data_i
 X = sub.select(FEATURES).to_numpy().astype(np.float32)
 y = sub["y"].to_numpy()
 fold = sub["fold"].to_numpy()
-PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset"]
+PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset", "hn_logdiff", "hn_small_off", "hn_trunc", "hn_same", "extra_q_tok"]
 sub = sub.select("iq", "i1", "y", "fold", "q_name", "q_addr", "s_name", "s_addr", *PF)
 import gc; gc.collect()
 oof = np.zeros(len(y), dtype=np.float32)
