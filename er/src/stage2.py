@@ -66,7 +66,7 @@ def load_qtext(work, split):
     ]).with_row_index("iq").select("iq", "name", "core", "addr", "q_is_s3", "name_nonascii")
 
 
-def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
+def s2_features(scored: pl.DataFrame, top: pl.DataFrame = None) -> pl.DataFrame:
     """scored: iq, i1, p for every candidate pair -> one row per query (its best S1)."""
     has_pf = all(c in scored.columns for c in PF)
     s = scored.select("iq", "i1", "p").sort(["iq", "p"], descending=[False, True])
@@ -98,8 +98,10 @@ def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
     q = q.join(inc, on="i1").with_columns(
         (pl.col("in_sum") - pl.col("p1")).alias("in_max_other"))
     # stage-1 pair features of the best and runner-up candidates
-    s = scored.with_columns(pl.col("p").rank("ordinal", descending=True).over("iq").alias("_rk")) \
-        .filter(pl.col("_rk") <= 2).with_columns(pl.col("_rk") - 1)
+    if top is None:
+        top = scored.with_columns(pl.col("p").rank("ordinal", descending=True).over("iq").alias("_rk")) \
+            .filter(pl.col("_rk") <= 2)
+    s = top.with_columns(pl.col("_rk") - 1)
     b = s.filter(pl.col("_rk") == 0).select("iq", *[pl.col(c).alias("b_" + c) for c in PF])
     r = s.filter(pl.col("_rk") == 1).select("iq", *[pl.col(c).alias("r_" + c) for c in PF])
     q = q.join(b, on="iq").join(r, on="iq", how="left")
@@ -208,8 +210,17 @@ def train(work, raw):
 
 def apply(work, out):
     meta = json.load(open(f"{work}/stage2_meta.json"))
-    scored = pl.read_parquet(f"{work}/test_scored.parquet", columns=["iq", "i1", "p", *PF])
-    f = s2_features(scored)
+    import glob
+    small, tops = [], []
+    for fp in sorted(glob.glob(f"{work}/test_scored_parts/part_*.parquet")):
+        d = pl.read_parquet(fp, columns=["iq", "i1", "p", *PF])
+        small.append(d.select("iq", "i1", "p"))
+        tops.append(d.with_columns(pl.col("p").rank("ordinal", descending=True).over("iq").alias("_rk"))
+                    .filter(pl.col("_rk") <= 2))
+        del d
+    scored = pl.concat(small); top = pl.concat(tops); del small, tops
+    f = s2_features(scored, top)
+    del top
     del scored
     import gc; gc.collect()
     f = anchor_features(f, load_qtext(work, "test"))
