@@ -99,6 +99,25 @@ def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
 
 SPLIT = os.environ.get("SPLIT", "train")
 
+R2F = ["r_o_max", "r_o_sum", "r_o_n50", "r_o_n80", "r_rank", "r_p"]
+
+
+def r2_features(f: pl.DataFrame, col: str) -> pl.DataFrame:
+    """Recompute same-S1 aggregates using round-1 stage-2 probabilities."""
+    g = f.group_by("i1").agg(pl.col(col).sum().alias("_s"), (pl.col(col) >= 0.5).sum().alias("_n5"),
+                             (pl.col(col) >= 0.8).sum().alias("_n8"))
+    top2 = f.sort(col, descending=True).group_by("i1").agg(
+        pl.col(col).first().alias("_a"), pl.col(col).get(1, null_on_oob=True).fill_null(0.0).alias("_b"))
+    f = f.join(g, on="i1").join(top2, on="i1").with_columns(
+        pl.col(col).rank("ordinal", descending=True).over("i1").cast(pl.Float32).alias("r_rank"))
+    return f.with_columns(
+        pl.when(pl.col("r_rank") == 1).then(pl.col("_b")).otherwise(pl.col("_a")).alias("r_o_max"),
+        (pl.col("_s") - pl.col(col)).alias("r_o_sum"),
+        (pl.col("_n5") - (pl.col(col) >= 0.5)).cast(pl.Float32).alias("r_o_n50"),
+        (pl.col("_n8") - (pl.col(col) >= 0.8)).cast(pl.Float32).alias("r_o_n80"),
+        pl.col(col).alias("r_p")).drop(["_s", "_n5", "_n8", "_a", "_b"])
+
+
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=63, min_data_in_leaf=200,
               feature_fraction=0.9, bagging_fraction=0.8, bagging_freq=1, verbose=-1,
               num_threads=4, seed=1)
@@ -118,7 +137,14 @@ def train(work, raw):
     for k in (0, 1):
         m = lgb.train(PARAMS, lgb.Dataset(X[fo != k], y[fo != k]), 500)
         pr[fo == k] = m.predict(X[fo == k])
-    f = f.with_columns(pl.Series("p2s", pr))
+    f = f.with_columns(pl.Series("p2s_r1", pr))
+    f = r2_features(f, "p2s_r1")
+    X2 = f.select(S2F + R2F).to_numpy().astype(np.float32)
+    pr2 = np.zeros(len(y), dtype=np.float32)
+    for k in (0, 1):
+        m = lgb.train(PARAMS, lgb.Dataset(X2[fo != k], y[fo != k]), 500)
+        pr2[fo == k] = m.predict(X2[fo == k])
+    f = f.with_columns(pl.Series("p2s", pr2))
 
     # rebuild the evaluation universe exactly as train.py did
     s1 = pl.read_parquet(f"{work}/{SPLIT}_source1.parquet").with_row_index("i1")
@@ -144,6 +170,8 @@ def train(work, raw):
         return fbeta_macro(pred, truth)
 
     base = {round(t, 3): score("p1", t) for t in (0.6, 0.65, 0.7)}
+    r1 = {round(t, 3): score("p2s_r1", t) for t in (0.64, 0.68, 0.72)}
+    print("round-1 stage2:", r1, flush=True)
     print("stage-1 only:", base, flush=True)
     res = {}
     for t in np.arange(0.50, 0.931, 0.02):
@@ -175,6 +203,8 @@ def train(work, raw):
     json.dump(rep, open(f"{work}/eval_report.json", "w"), indent=1)
     m = lgb.train(PARAMS, lgb.Dataset(X, y), 500)
     m.save_model(f"{work}/model_s2.txt")
+    m2 = lgb.train(PARAMS, lgb.Dataset(X2, y), 500)
+    m2.save_model(f"{work}/model_s2r2.txt")
     json.dump({"threshold": bt, "f05": res[bt], "stage1": base}, open(f"{work}/stage2_meta.json", "w"))
 
 
@@ -183,7 +213,10 @@ def apply(work, out):
     scored = pl.read_parquet(f"{work}/test_scored.parquet")
     f = anchor_features(s2_features(scored), load_qtext(work, "test"))
     m = lgb.Booster(model_file=f"{work}/model_s2.txt")
-    f = f.with_columns(pl.Series("p2s", m.predict(f.select(S2F).to_numpy().astype(np.float32))))
+    f = f.with_columns(pl.Series("p2s_r1", m.predict(f.select(S2F).to_numpy().astype(np.float32))))
+    f = r2_features(f, "p2s_r1")
+    m2 = lgb.Booster(model_file=f"{work}/model_s2r2.txt")
+    f = f.with_columns(pl.Series("p2s", m2.predict(f.select(S2F + R2F).to_numpy().astype(np.float32))))
     acc = f.filter(pl.col("p2s") >= meta["threshold"]).select("iq", "i1")
     s1 = pl.read_parquet(f"{work}/test_source1.parquet").with_row_index("i1").select("i1", "entity_id")
     q = pl.concat([pl.read_parquet(f"{work}/test_source2.parquet").select("entity_id"),
