@@ -108,9 +108,20 @@ def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
 
 SPLIT = os.environ.get("SPLIT", "train")
 
-PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=63, min_data_in_leaf=200,
+PARAMS = dict(objective="binary", learning_rate=float(os.environ.get("S2_LR", 0.05)),
+              num_leaves=int(os.environ.get("S2_LEAVES", 63)), min_data_in_leaf=200,
               feature_fraction=0.9, bagging_fraction=0.8, bagging_freq=1, verbose=-1,
               num_threads=4, seed=1)
+ROUNDS = int(os.environ.get("S2_ROUNDS", 500))
+SEEDS = [int(x) for x in os.environ.get("S2_SEEDS", "1").split(",")]
+
+
+def fit_predict(Xtr, ytr, Xte):
+    out = np.zeros(len(Xte), dtype=np.float64)
+    for sd in SEEDS:
+        m = lgb.train({**PARAMS, "seed": sd}, lgb.Dataset(Xtr, ytr), ROUNDS)
+        out += m.predict(Xte)
+    return (out / len(SEEDS)).astype(np.float32)
 
 
 def train(work, raw):
@@ -118,15 +129,19 @@ def train(work, raw):
     oof = pl.read_parquet(f"{work}/oof.parquet")
     fold = oof.group_by("iq").agg(pl.col("fold").first())
     lab = oof.select("iq", "i1", "y")
-    f = s2_features(oof.select("iq", "i1", "p", *PF))
-    f = anchor_features(f, load_qtext(work, SPLIT)).join(fold, on="iq") \
-        .join(lab, on=["iq", "i1"], how="left").with_columns(pl.col("y").fill_null(0))
+    cache = f"{work}/s2feat_{SPLIT}.parquet"
+    if os.path.exists(cache) and os.environ.get("S2_CACHE", "1") == "1":
+        f = pl.read_parquet(cache)
+    else:
+        f = s2_features(oof.select("iq", "i1", "p", *PF))
+        f = anchor_features(f, load_qtext(work, SPLIT)).join(fold, on="iq") \
+            .join(lab, on=["iq", "i1"], how="left").with_columns(pl.col("y").fill_null(0))
+        f.write_parquet(cache)
     X = f.select(S2F).to_numpy().astype(np.float32)
     y, fo = f["y"].to_numpy(), f["fold"].to_numpy()
     pr = np.zeros(len(y), dtype=np.float32)
     for k in (0, 1):
-        m = lgb.train(PARAMS, lgb.Dataset(X[fo != k], y[fo != k]), 500)
-        pr[fo == k] = m.predict(X[fo == k])
+        pr[fo == k] = fit_predict(X[fo != k], y[fo != k], X[fo == k])
     f = f.with_columns(pl.Series("p2s", pr))
 
     # rebuild the evaluation universe exactly as train.py did
@@ -182,9 +197,13 @@ def train(work, raw):
            "singletons_correct": ms, "singletons_total": sum(1 for t in truth.values() if not t)}
     print("REPORT", json.dumps(rep, indent=1), flush=True)
     json.dump(rep, open(f"{work}/eval_report.json", "w"), indent=1)
-    m = lgb.train(PARAMS, lgb.Dataset(X, y), 500)
-    m.save_model(f"{work}/model_s2.txt")
-    json.dump({"threshold": bt, "f05": res[bt], "stage1": base}, open(f"{work}/stage2_meta.json", "w"))
+    f.select("iq", "i1", "y", "p1", "p2s", "fold").write_parquet(f"{work}/oof_s2.parquet")
+    if os.environ.get("S2_SAVE", "1") == "1":
+        for i, sd in enumerate(SEEDS):
+            lgb.train({**PARAMS, "seed": sd}, lgb.Dataset(X, y), ROUNDS).save_model(f"{work}/model_s2_{i}.txt")
+        json.dump({"n": len(SEEDS)}, open(f"{work}/model_s2_n.json", "w"))
+    if os.environ.get("S2_SAVE", "1") == "1":
+        json.dump({"threshold": bt, "f05": res[bt], "stage1": base}, open(f"{work}/stage2_meta.json", "w"))
 
 
 def apply(work, out):
@@ -194,8 +213,10 @@ def apply(work, out):
     del scored
     import gc; gc.collect()
     f = anchor_features(f, load_qtext(work, "test"))
-    m = lgb.Booster(model_file=f"{work}/model_s2.txt")
-    f = f.with_columns(pl.Series("p2s", m.predict(f.select(S2F).to_numpy().astype(np.float32))))
+    n = json.load(open(f"{work}/model_s2_n.json"))["n"]
+    Xt = f.select(S2F).to_numpy().astype(np.float32)
+    pt = np.mean([lgb.Booster(model_file=f"{work}/model_s2_{i}.txt").predict(Xt) for i in range(n)], axis=0)
+    f = f.with_columns(pl.Series("p2s", pt.astype(np.float32)))
     acc = f.filter(pl.col("p2s") >= meta["threshold"]).select("iq", "i1")
     s1 = pl.read_parquet(f"{work}/test_source1.parquet").with_row_index("i1").select("i1", "entity_id")
     q = pl.concat([pl.read_parquet(f"{work}/test_source2.parquet").select("entity_id"),
