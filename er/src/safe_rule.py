@@ -6,7 +6,7 @@ m=pl.read_csv(SRC,separator='\t',quote_char=None,infer_schema=False).with_column
 pairs=m.explode('matched_entity_ids').filter(pl.col('matched_entity_ids')!='').rename({'source1_entity_id':'s1','matched_entity_ids':'q'}).join(s1,on='s1').join(q,on='q')
 sc=pl.concat([pl.read_parquet(f,columns=['iq','i1','p','hn_small_off']).join(pairs.select('iq','i1'),on=['iq','i1'],how='semi') for f in sorted(glob.glob(f'{W}/test_scored_parts/part_*.parquet'))])
 pairs=pairs.join(sc,on=['iq','i1'],how='left')
-bad=((pl.col('hn_small_off')==1)&(pl.col('p')<0.65)).fill_null(False)
+import os as _o; T=float(_o.environ.get('RULE_P','0.65')); bad=((pl.col('hn_small_off')==1)&(pl.col('p')<T)).fill_null(False)
 print('pairs',pairs.height,'removed by rule',pairs.filter(bad).height)
 keep=pairs.filter(~bad)
 g=keep.sort('q').group_by('i1').agg(pl.col('q').str.join(',').alias('matched_entity_ids'))
