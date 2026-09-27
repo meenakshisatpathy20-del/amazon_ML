@@ -1,0 +1,16 @@
+import sys, os, glob, polars as pl
+W, SRC, DST = sys.argv[1], sys.argv[2], sys.argv[3]
+s1=pl.read_parquet(f'{W}/test_source1.parquet').with_row_index('i1').select('i1',pl.col('entity_id').alias('s1'))
+q=pl.concat([pl.read_parquet(f'{W}/test_source2.parquet').select('entity_id'),pl.read_parquet(f'{W}/test_source3.parquet').select('entity_id')]).with_row_index('iq').rename({'entity_id':'q'})
+m=pl.read_csv(SRC,separator='\t',quote_char=None,infer_schema=False).with_columns(pl.col('matched_entity_ids').fill_null('').str.split(','))
+pairs=m.explode('matched_entity_ids').filter(pl.col('matched_entity_ids')!='').rename({'source1_entity_id':'s1','matched_entity_ids':'q'}).join(s1,on='s1').join(q,on='q')
+sc=pl.concat([pl.read_parquet(f,columns=['iq','i1','p','hn_small_off']).join(pairs.select('iq','i1'),on=['iq','i1'],how='semi') for f in sorted(glob.glob(f'{W}/test_scored_parts/part_*.parquet'))])
+pairs=pairs.join(sc,on=['iq','i1'],how='left')
+bad=((pl.col('hn_small_off')==1)&(pl.col('p')<0.65)).fill_null(False)
+print('pairs',pairs.height,'removed by rule',pairs.filter(bad).height)
+keep=pairs.filter(~bad)
+g=keep.sort('q').group_by('i1').agg(pl.col('q').str.join(',').alias('matched_entity_ids'))
+out=s1.join(g,on='i1',how='left').with_columns(pl.col('matched_entity_ids').fill_null('')).sort('i1').select(pl.col('s1').alias('source1_entity_id'),'matched_entity_ids')
+os.makedirs(os.path.dirname(DST),exist_ok=True)
+out.write_csv(DST,separator='\t',quote_style='never')
+print('kept pairs',keep.height)
