@@ -53,9 +53,11 @@ def lists(df, col):
 import os
 os.makedirs(OUT, exist_ok=True)
 m = lists(acc, "matched_entity_ids")
-c = lists(scored.select("iq", "i1"), "candidate_entity_ids")
 m.write_csv(f"{OUT}/matching_results.tsv", separator="\t", quote_style="never")
-c.write_csv(f"{OUT}/candidate_pairs.tsv", separator="\t", quote_style="never")
+del best
+if not os.path.exists(f"{OUT}/candidate_pairs.tsv"):
+    lists(scored.select("iq", "i1"), "candidate_entity_ids") \
+        .write_csv(f"{OUT}/candidate_pairs.tsv", separator="\t", quote_style="never")
 nm = (m["matched_entity_ids"] != "").sum()
 print(f"S1 rows {m.height}, with matches {nm}, empty {m.height-nm}; "
       f"candidates/S1 {scored.height/s1.height:.2f}; done {time.time()-t0:.0f}s")

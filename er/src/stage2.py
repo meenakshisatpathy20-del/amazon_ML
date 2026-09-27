@@ -25,6 +25,8 @@ S2F = ["p1", "p2", "margin", "ncand_q", "o_n", "o_n50", "o_n90", "o_max", "o_mea
        "an_n_tset", "an_c_ratio", "an_a_tset", "an_a_ratio", "an2_n_tset", "an2_a_tset",
        "an_best_n", "an_best_a", "q_is_s3", "q_nonascii", "same_src_anchor"]
 S2F_BASE = S2F[:15]
+PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset"]
+S2F = S2F + ["b_" + c for c in PF] + ["r_" + c for c in PF]
 
 
 def anchor_features(f: pl.DataFrame, qtext: pl.DataFrame) -> pl.DataFrame:
@@ -94,7 +96,12 @@ def s2_features(scored: pl.DataFrame) -> pl.DataFrame:
                                     pl.col("p").sum().alias("in_sum"))
     q = q.join(inc, on="i1").with_columns(
         (pl.col("in_sum") - pl.col("p1")).alias("in_max_other"))
-    return q.select("iq", "i1", *S2F_BASE)
+    # stage-1 pair features of the best and runner-up candidates
+    s = s.with_columns(pl.int_range(pl.len()).over("iq").alias("_rk"))
+    b = s.filter(pl.col("_rk") == 0).select("iq", *[pl.col(c).alias("b_" + c) for c in PF])
+    r = s.filter(pl.col("_rk") == 1).select("iq", *[pl.col(c).alias("r_" + c) for c in PF])
+    q = q.join(b, on="iq").join(r, on="iq", how="left")
+    return q.select("iq", "i1", *S2F_BASE, *[c for c in q.columns if c.startswith(("b_", "r_")) and c[2:] in PF])
 
 
 SPLIT = os.environ.get("SPLIT", "train")
@@ -109,7 +116,7 @@ def train(work, raw):
     oof = pl.read_parquet(f"{work}/oof.parquet")
     fold = oof.group_by("iq").agg(pl.col("fold").first())
     lab = oof.select("iq", "i1", "y")
-    f = s2_features(oof.select("iq", "i1", "p"))
+    f = s2_features(oof.select("iq", "i1", "p", *PF))
     f = anchor_features(f, load_qtext(work, SPLIT)).join(fold, on="iq") \
         .join(lab, on=["iq", "i1"], how="left").with_columns(pl.col("y").fill_null(0))
     X = f.select(S2F).to_numpy().astype(np.float32)

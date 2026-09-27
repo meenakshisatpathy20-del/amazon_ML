@@ -65,7 +65,7 @@ sub = pl.concat([add_features(attach_text(c, s1, q)).drop(["_qn", "_sn", "_qt", 
                  [sub.filter(pl.col("iq") % 8 == k) for k in range(8)]])
 print("features done", f"{time.time()-t0:.0f}s", flush=True)
 
-params = dict(objective="binary", learning_rate=0.08, num_leaves=127, min_data_in_leaf=100,
+params = dict(objective="binary", learning_rate=0.06, num_leaves=127, min_data_in_leaf=100,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
               verbose=-1, num_threads=4, seed=0)
 X = sub.select(FEATURES).to_numpy().astype(np.float32)
@@ -77,7 +77,7 @@ import gc; gc.collect()
 oof = np.zeros(len(y), dtype=np.float32)
 for f in (0, 1):
     tr, va = fold != f, fold == f
-    m = lgb.train(params, lgb.Dataset(X[tr], y[tr]), num_boost_round=400)
+    m = lgb.train(params, lgb.Dataset(X[tr], y[tr]), num_boost_round=600)
     oof[va] = m.predict(X[va])
     print(f"fold {f} done {time.time()-t0:.0f}s", flush=True)
 
@@ -100,7 +100,7 @@ bt = max(res, key=res.get)
 print("BEST threshold", bt, "OOF F0.5", res[bt], flush=True)
 
 # final model on all sampled pairs
-m = lgb.train(params, lgb.Dataset(X, y), num_boost_round=400)
+m = lgb.train(params, lgb.Dataset(X, y), num_boost_round=600)
 m.save_model(f"{WORK}/model.txt")
 imp = sorted(zip(FEATURES, m.feature_importance("gain")), key=lambda x: -x[1])
 print("importance", [(a, int(b)) for a, b in imp[:15]])
