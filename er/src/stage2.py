@@ -25,7 +25,8 @@ S2F = ["p1", "p2", "margin", "ncand_q", "o_n", "o_n50", "o_n90", "o_max", "o_mea
        "an_n_tset", "an_c_ratio", "an_a_tset", "an_a_ratio", "an2_n_tset", "an2_a_tset",
        "an_best_n", "an_best_a", "q_is_s3", "q_nonascii", "same_src_anchor",
        "an_sk_max", "an_num_max", "an_n_mean", "an_a_mean", "an_n_agree", "an_a_agree", "an_cnt",
-       "q_noaddr", "q_corelen", "an_w_nagree", "an_w_aagree", "an_w_sim", "an_w_tot", "an_same_src_agree", "an_hn_same_rate", "an_hn_off_rate"]
+       "q_noaddr", "q_corelen", "an_w_nagree", "an_w_aagree", "an_w_sim", "an_w_tot", "an_same_src_agree", "an_hn_same_rate", "an_hn_off_rate",
+       "an_s1_name_mean", "an_s1_addr_mean", "an_s1_name_max", "an_s1_addr_max", "an_trunc_rate", "an_extra_mean"]
 S2F_BASE = S2F[:15]
 PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset", "hn_logdiff", "hn_small_off", "hn_trunc", "hn_same", "extra_q_tok"]
 S2F = S2F + ["b_" + c for c in PF] + ["r_" + c for c in PF]
@@ -45,7 +46,9 @@ def anchor_features(f: pl.DataFrame, qtext: pl.DataFrame) -> pl.DataFrame:
     j = ranked.select("iq", "i1", "_r").join(tops, on="i1", suffix="_a").filter(pl.col("_r") != pl.col("_r_a")) \
         .sort(["iq", "_r_a"]).with_columns(pl.int_range(pl.len()).over("iq").alias("k")).filter(pl.col("k") < 8) \
         .select("iq", "aq", "k").join(f.select(pl.col("iq").alias("aq"), pl.col("p1").alias("ap"),
-                      pl.col("b_hn_same").alias("a_hs"), pl.col("b_hn_small_off").alias("a_ho")), on="aq")
+                      pl.col("b_hn_same").alias("a_hs"), pl.col("b_hn_small_off").alias("a_ho"),
+                      pl.col("b_n_tset").alias("a_bn"), pl.col("b_a_tset").alias("a_ba"),
+                      pl.col("b_hn_trunc").alias("a_ht"), pl.col("b_extra_q_tok").alias("a_ex")), on="aq")
     t = qtext.select("iq", "name", "core", "addr", "q_is_s3", _skel("core").alias("sk"))
     ta = t.rename({"iq": "aq", "name": "a_name", "core": "a_core", "addr": "a_addr", "q_is_s3": "a_s3", "sk": "a_sk"})
     parts = []
@@ -64,7 +67,7 @@ def anchor_features(f: pl.DataFrame, qtext: pl.DataFrame) -> pl.DataFrame:
         ).with_columns(
             (pl.col("_n1").list.set_intersection("_n2").list.len()
              / pl.col("_n1").list.set_union("_n2").list.len().clip(1)).cast(pl.Float32).alias("num_jac"))
-        parts.append(c.select("iq", "k", "ap", "a_hs", "a_ho", "n_tset", "c_ratio", "sk_ratio", "a_tset", "a_ratio", "same_src", "num_jac"))
+        parts.append(c.select("iq", "k", "ap", "a_hs", "a_ho", "a_bn", "a_ba", "a_ht", "a_ex", "n_tset", "c_ratio", "sk_ratio", "a_tset", "a_ratio", "same_src", "num_jac"))
         del c
     j = pl.concat(parts)
     a1 = j.filter(pl.col("k") == 0).select("iq", pl.col("n_tset").alias("an_n_tset"),
@@ -82,6 +85,9 @@ def anchor_features(f: pl.DataFrame, qtext: pl.DataFrame) -> pl.DataFrame:
         (pl.col("ap") * (pl.col("n_tset") + pl.col("a_tset"))).sum().alias("an_w_sim"),
         pl.col("ap").sum().alias("an_w_tot"),
         pl.col("a_hs").mean().alias("an_hn_same_rate"), pl.col("a_ho").mean().alias("an_hn_off_rate"),
+        pl.col("a_bn").mean().alias("an_s1_name_mean"), pl.col("a_ba").mean().alias("an_s1_addr_mean"),
+        pl.col("a_bn").max().alias("an_s1_name_max"), pl.col("a_ba").max().alias("an_s1_addr_max"),
+        pl.col("a_ht").mean().alias("an_trunc_rate"), pl.col("a_ex").mean().alias("an_extra_mean"),
         (pl.col("same_src") * (pl.col("n_tset") >= 80)).sum().cast(pl.Float32).alias("an_same_src_agree"))
     f = f.join(a1, on="iq", how="left").join(a2, on="iq", how="left").join(ag, on="iq", how="left") \
         .join(qtext.select("iq", pl.col("q_is_s3").cast(pl.Float32), pl.col("name_nonascii").cast(pl.Float32).alias("q_nonascii"),
