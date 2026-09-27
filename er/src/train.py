@@ -71,7 +71,8 @@ params = dict(objective="binary", learning_rate=0.08, num_leaves=127, min_data_i
 X = sub.select(FEATURES).to_numpy().astype(np.float32)
 y = sub["y"].to_numpy()
 fold = sub["fold"].to_numpy()
-sub = sub.select("iq", "i1", "y", "fold", "q_name", "q_addr", "s_name", "s_addr")
+PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset"]
+sub = sub.select("iq", "i1", "y", "fold", "q_name", "q_addr", "s_name", "s_addr", *PF)
 import gc; gc.collect()
 oof = np.zeros(len(y), dtype=np.float32)
 for f in (0, 1):
@@ -104,6 +105,6 @@ m.save_model(f"{WORK}/model.txt")
 imp = sorted(zip(FEATURES, m.feature_importance("gain")), key=lambda x: -x[1])
 print("importance", [(a, int(b)) for a, b in imp[:15]])
 json.dump({"threshold": bt, "oof": res, "top_k": TOP_K, "split": SPLIT, "frac": FRAC}, open(f"{WORK}/train_meta.json", "w"), indent=1)
-sub.select("iq", "i1", "y", "p", "fold", "q_name", "q_addr", "s_name", "s_addr") \
+sub.select("iq", "i1", "y", "p", "fold", "q_name", "q_addr", "s_name", "s_addr", *PF) \
     .write_parquet(f"{WORK}/oof.parquet")
 print("done", f"{time.time()-t0:.0f}s")

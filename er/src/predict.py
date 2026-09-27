@@ -30,7 +30,8 @@ for start in range(0, q.height, CH):
         continue
     part = add_features(attach_text(part, s1, q))
     p = model.predict(part.select(FEATURES).to_numpy().astype(np.float32), num_threads=4)
-    scored.append(part.select("iq", "i1").with_columns(pl.Series("p", p.astype(np.float32))))
+    PF = ["n_tset", "a_tset", "c_ratio", "sk_ratio", "num_jac", "rel_n_tset", "rel_a_tset", "bscore", "brank", "aa_tset"]
+    scored.append(part.select("iq", "i1", *PF).with_columns(pl.Series("p", p.astype(np.float32))))
     print(f"  scored queries<{start+CH}  {time.time()-t0:.0f}s", flush=True)
 scored = pl.concat(scored)
 scored.write_parquet(f"{WORK}/test_scored.parquet")
