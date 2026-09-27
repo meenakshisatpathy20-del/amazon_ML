@@ -22,7 +22,7 @@ from features import FEATURES, add_features
 WORK = sys.argv[1] if len(sys.argv) > 1 else "work"
 RAW = sys.argv[2] if len(sys.argv) > 2 else "../data/raw"
 TOP_K = int(sys.argv[3]) if len(sys.argv) > 3 else 8
-FRAC = 0.06
+FRAC = 0.05
 SPLIT = os.environ.get("SPLIT", "train")
 t0 = time.time()
 
@@ -71,6 +71,8 @@ params = dict(objective="binary", learning_rate=0.08, num_leaves=127, min_data_i
 X = sub.select(FEATURES).to_numpy().astype(np.float32)
 y = sub["y"].to_numpy()
 fold = sub["fold"].to_numpy()
+sub = sub.select("iq", "i1", "y", "fold", "q_name", "q_addr", "s_name", "s_addr")
+import gc; gc.collect()
 oof = np.zeros(len(y), dtype=np.float32)
 for f in (0, 1):
     tr, va = fold != f, fold == f
