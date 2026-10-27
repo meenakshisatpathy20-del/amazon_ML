@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PulseQoS Design v2</title>
+<style>
+  :root { --blue:#008CC8; --navy:#0B2E4F; --yel:#F5B400; --grey:#333; --light:#EEF7FC; --line:#CFE3EF; }
+  @page { size: A4; margin: 16mm 15mm 16mm 15mm; }
+  body { font-family: "Inter", "Segoe UI", Arial, sans-serif; color: var(--grey); font-size: 10.2pt; line-height: 1.45; margin: 0; background: #fff; }
+  h1 { color: var(--navy); font-size: 22pt; margin: 0 0 2pt; }
+  h2 { color: var(--blue); font-size: 14pt; margin: 18pt 0 6pt; border-bottom: 2px solid var(--line); padding-bottom: 3pt; break-after: avoid; }
+  h3 { color: var(--navy); font-size: 11.5pt; margin: 12pt 0 4pt; break-after: avoid; }
+  p { margin: 4pt 0 6pt; }
+  .sub { color: #555; font-size: 11pt; margin-bottom: 10pt; }
+  .tag { display:inline-block; background: var(--navy); color: var(--yel); font-weight: 700; font-size: 8pt; padding: 1pt 5pt; border-radius: 3pt; margin-right: 4pt; vertical-align: 1pt; }
+  .ai { background: #7A3FC9; color: #fff; }
+  .new { background: var(--yel); color: var(--navy); }
+  .box { background: var(--light); border-left: 4px solid var(--blue); padding: 6pt 10pt; margin: 8pt 0; break-inside: avoid; }
+  .warn { background: #FFF6E0; border-left-color: var(--yel); }
+  table { border-collapse: collapse; width: 100%; margin: 6pt 0 10pt; font-size: 9.2pt; break-inside: auto; }
+  th { background: var(--navy); color: #fff; text-align: left; padding: 4pt 6pt; font-weight: 600; }
+  td { border-bottom: 1px solid var(--line); padding: 4pt 6pt; vertical-align: top; }
+  tr { break-inside: avoid; }
+  code, pre { font-family: "JetBrains Mono", Consolas, monospace; font-size: 8.4pt; }
+  pre { background: #0F1E2E; color: #E6F1F8; padding: 8pt 10pt; border-radius: 4pt; white-space: pre-wrap; break-inside: avoid; }
+  ul, ol { margin: 3pt 0 6pt 16pt; padding: 0; }
+  li { margin: 1.5pt 0; }
+  .muted { color: #666; font-size: 9pt; }
+  .kpi { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8pt; margin: 8pt 0; }
+  .kpi div { border: 1px solid var(--line); border-top: 4px solid #7A3FC9; padding: 6pt 8pt; break-inside: avoid; }
+  .kpi b { color: var(--navy); }
+</style>
+</head>
+<body>
+
+<h1>PulseQoS: Design Document v2</h1>
+<div class="sub">Tata Elxsi TELIPORT Season 4 · Case Study 3: Adaptive QoS Engine for Mixed Home Broadband Traffic<br>
+Team: Manas Girdhar (Team Leader), Meenakshi Satpathy · Birla Institute of Technology, Mesra · v2, 27 Oct 2026</div>
+
+<div class="box">
+<b>Tagline:</b> the call never notices the download.<br>
+<b>One-line pitch:</b> PulseQoS is an open Linux QoS controller that recognises traffic without reading it, follows the real link speed within a second, accepts a temporary user intent, and <b>predicts the effect of every policy change before users feel it</b>, using a learned <i>Experience Twin</i> of the household link. If a change still hurts, it rolls back.
+</div>
+
+<h2>1. Summary</h2>
+<p>PulseQoS runs on a home router. It protects interactive traffic (calls, gaming) when the link is busy or its capacity drops, while making sure bulk traffic still moves. It is built on proven Linux mechanisms (CAKE, HTB, IFB, conntrack) and adds a control layer on top of them, in two parts.</p>
+<p><b>Deterministic core (always on, always the baseline):</b></p>
+<ol>
+<li>Two-speed control: a fast loop that tracks link capacity, and a slow loop for policy changes behind a safety gate.</li>
+<li>Focus Mode intents with expiry, a priority ceiling and a daily Fairness Budget.</li>
+<li>Validate → bounded live trial → keep or roll back, plus a watchdog that restores a known safe state.</li>
+<li>One-command reproducible experiments against strong existing systems.</li>
+</ol>
+<p><b>The AI layer that makes PulseQoS different.</b> Each part must beat a deterministic twin, or it is switched off.</p>
+<div class="kpi">
+  <div><span class="tag ai">AI 1</span><b>Conformal traffic classifier</b><br>Boosts a flow only when the prediction set is a single interactive class. Wrong boosts are then bounded by a chosen rate (e.g. 1%) <i>by construction</i> on traffic like the calibration data.</div>
+  <div><span class="tag ai">AI 2</span><b>Experience Twin</b><br>A learned model of the household link that predicts the next 10 s of call delay for each candidate action. Unsafe policies are rejected <i>before</i> users feel them.</div>
+  <div><span class="tag ai">AI 3</span><b>Zero-click Focus</b><br>Detects that a call has started on a loaded link and protects it automatically, with Fairness Budget accounting and one-tap undo.</div>
+</div>
+<p><b>What we deliberately do not do:</b> no chatbot and no LLM in the control path. The case study asks that AI <i>"improves a measurable outcome rather than merely adding a conversational interface"</i>. Every AI part above has a number it must improve.</p>
+
+<h2>2. Why this wins: what others will and won't do</h2>
+<table>
+<tr><th style="width:32%">Typical submission</th><th>PulseQoS</th></tr>
+<tr><td>"ML classifies traffic, then prioritise it"</td><td>Builds on CAKE and is benchmarked <i>against</i> CAKE, CAKE's own autorate and cake-autorate, not just against "no QoS"</td></tr>
+<tr><td>Classifier accuracy (F1) only</td><td>A statistical bound on the harmful error (wrong boost), plus time-to-classify</td></tr>
+<tr><td>AI changes the network live and hopes</td><td>The Experience Twin screens every change first; the safety gate verifies it live; the watchdog restores a safe state</td></tr>
+<tr><td>A user toggle for "gaming mode"</td><td>Temporary intents with expiry and Fairness Budget; zero-click protection with undo</td></tr>
+<tr><td>A pretty dashboard</td><td>A real measured pilot already (section 10), raw data committed, and every chart reproducible from one command</td></tr>
+</table>
+
+<h2>3. Problem and hard constraints</h2>
+<p>A home connection carries calls, gaming, voice, adaptive video, downloads, updates and backups at the same time. Large queues, not low bandwidth, are what ruin interactive traffic. The case study's scenarios: (1) an ISO download during a video conference; (2) WAN drops from 100 to 20 Mbps; (3) three TVs plus a latency-sensitive game.</p>
+<table>
+<tr><th>Constraint (case study)</th><th>How PulseQoS meets it</th></tr>
+<tr><td>Do not decrypt application traffic</td><td>Classification uses flow metadata only (sizes, timing, direction, protocol). No payload, no SNI or domain logging.</td></tr>
+<tr><td>Linux tc or another open, inspectable mechanism</td><td>CAKE (primary), HTB + fq_codel (hard-floor variant), IFB, tc actions <code>ctinfo</code>, <code>pedit</code>, <code>mirred</code></td></tr>
+<tr><td>IPv4 and, where available, IPv6</td><td>Both stacks in every scenario; parity reported</td></tr>
+<tr><td>Policy rollback; no starvation of low priority</td><td>Versioned policy bundles, last-known-good rollback; HTB floors (hard) or CAKE minimum-progress monitoring (soft)</td></tr>
+<tr><td>Classifiers expose confidence; allow correction</td><td>Conformal prediction sets plus calibrated scores; user correction in UI and API</td></tr>
+<tr><td>Document third-party licences</td><td>Licence table in repo, including datasets</td></tr>
+<tr><td>Generated data and impairment settings included</td><td>All netem settings, traffic scripts, seeds and raw results committed</td></tr>
+<tr><td>Emulated hardware labelled as emulation</td><td>Every chart is labelled "Linux namespace emulation"</td></tr>
+<tr><td>No credentials in source control</td><td>Config via environment; example secrets are fictitious; secret scanning in CI</td></tr>
+<tr><td>Remediation bounded, observable, reversible; failure returns to a safe state</td><td>Fixed action menu, Experience Twin pre-check, validator, bounded trial, fast-abort, watchdog</td></tr>
+</table>
+
+<h3>Expected-output checklist (case study) → where it is delivered</h3>
+<table>
+<tr><th>Expected output</th><th>Delivered as</th></tr>
+<tr><td>Traffic-class and link-capacity estimator</td><td>Modules 1 and 2</td></tr>
+<tr><td>Dynamic QoS policy engine and enforcement module</td><td>Modules 4, 6 and section 6</td></tr>
+<tr><td>Dashboard: latency, jitter, loss, throughput, queue depth, fairness</td><td>Module 7</td></tr>
+<tr><td>Automated baseline-vs-optimised experiments</td><td>Section 9, <code>make bench</code></td></tr>
+<tr><td>API or UI for temporary service intent</td><td>Module 5 (REST + dashboard)</td></tr>
+<tr><td>Architecture diagram: device, edge, network, data, analytics, UI</td><td>Section 4 (six-layer view)</td></tr>
+<tr><td>Setup guide with exact versions, commands, verification</td><td><code>SETUP.md</code>: kernel, iproute2, Python and package versions pinned; <code>make verify</code></td></tr>
+<tr><td>Scripted demo: reset, inject condition, collect evidence, report</td><td><code>make demo SCENARIO=S2</code></td></tr>
+<tr><td>Known-limitations section</td><td>Section 13</td></tr>
+</table>
+
+<h2>4. Architecture: six layers, one closed loop, two speeds</h2>
+<table>
+<tr><th style="width:16%">Layer</th><th>Components</th></tr>
+<tr><td><b>UI</b></td><td>Focus Mode app and REST API (LAN-only, authenticated); dashboard with a "Why" panel and audit timeline</td></tr>
+<tr><td><b>Analytics &amp; control</b></td><td><b>Fast loop (≤ 1 s):</b> capacity estimator → shaper rate. <b>Slow loop (10–30 s):</b> policy controller → <span class="tag ai">AI</span> Experience Twin pre-check → safety gate. Watchdog.</td></tr>
+<tr><td><b>Data</b></td><td>Flow table (conntrack + features), telemetry time series, versioned policy bundles, audit log, Twin training set</td></tr>
+<tr><td><b>Edge (router)</b></td><td><span class="tag ai">AI</span> Conformal flow classifier → class written to the flow's conntrack mark → tc enforcement (CAKE on WAN egress, CAKE on IFB for download)</td></tr>
+<tr><td><b>Network</b></td><td>WAN bottleneck (emulated: token bucket + netem), reflectors for delay probes</td></tr>
+<tr><td><b>Device</b></td><td>Home devices (emulated): laptop call, console, three TVs, large download; IPv4 and IPv6</td></tr>
+</table>
+<div class="box"><span class="tag new">FIX</span><b>Why two speeds.</b> In v1, every change went through a 10–30 s trial and a minimum hold time, and so did shaper-rate cuts. During a 100 → 20 Mbps drop that would delay the one action that prevents a queue. In v2, <b>rate decreases from the capacity estimator act immediately</b> and are exempt from hold time and trial; rate increases are slow and bounded. Only tin mappings, intents and class settings go through the safety gate. If the fast loop changes the rate during a trial, the trial is marked <i>inconclusive</i> and repeated, so a capacity change is never blamed on a policy.</div>
+
+<h2>5. Module specifications</h2>
+<p>Modules communicate with small JSON messages on a local bus, so any module can be replaced by a stub in tests. Each module lists its input, output, state, failure handling and success condition, as the case study requires.</p>
+
+<h3>Module 1: Conformal flow classifier <span class="tag ai">AI 1</span></h3>
+<ul>
+<li><b>Input:</b> per-flow metadata from conntrack and packet sampling: packet-size statistics, inter-arrival times, direction ratio, burst pattern, protocol (TCP/UDP/QUIC), port range, flow age. No payload bytes.</li>
+<li><b>Classes:</b> Call-Audio, Call-Video, Gaming, Streaming, Interactive-Web, Bulk, Unknown. <span class="tag new">FIX</span> v1 had one "Interactive-RT" class; audio and video of a call are split because they belong in different CAKE tins (section 6).</li>
+<li><b>Model:</b> LightGBM on early-flow and rolling-window features.</li>
+<li><b>Confidence = conformal prediction:</b> on a held-out calibration set, compute nonconformity scores and choose a threshold so that the prediction set contains the true class with probability ≥ 1 − α. We use the class-conditional (Mondrian) variant, so this holds per class. <b>A flow is boosted only if its prediction set is a single interactive class.</b> If the true class is not interactive, that singleton set has missed the true class, so <b>P(wrong boost) ≤ α</b> (marginal, under exchangeability with the calibration data). Any other set means Unknown, which means best effort.</li>
+<li><b>Honest limit:</b> the guarantee holds for traffic like the calibration data. A drift monitor tracks the empirical miss rate on user-confirmed flows; if it exceeds α, boosting falls back to the deterministic rules until recalibration.</li>
+<li><b>Deterministic twin (baseline):</b> port and hostname rules (qosify-style).</li>
+<li><b>State:</b> flow table with class, prediction set, user override. Overrides win immediately for enforcement; they enter training data only after validation.</li>
+<li><b>Failure:</b> model crash or timeout → all flows best effort; nothing is boosted on a guess.</li>
+<li><b>Success:</b> macro-F1 and confusion matrix; <b>wrong-boost rate vs the target α</b>; abstention rate; <b>time-to-classify</b> <span class="tag new">NEW</span>; results on held-out unseen apps, VPN and QUIC.</li>
+<li><b>Data</b> <span class="tag new">FIX</span>: train and test on <b>real application captures</b> recorded by the team with consent (call, game, streaming, download), plus public labelled datasets where the licence allows (e.g. ISCX VPN-nonVPN 2016, CESNET-QUIC22). Synthetic generators are used for load only, never as classifier ground truth. Splits are by capture session.</li>
+</ul>
+
+<h3>Module 2: Capacity estimator (fast loop)</h3>
+<ul>
+<li><b>Input:</b> delay probes to several reflectors (1/s, faster under load); achieved rate per direction from <code>tc -s</code>.</li>
+<li><b>Method</b> <span class="tag new">FIX</span>: <b>one-way delay</b> per direction using ICMP timestamp probes (as <code>tsping</code> does for cake-autorate) or <code>irtt</code>. Clocks need not be synchronised, because only the <i>increase</i> over a per-direction baseline is used. When OWD is unavailable (some ISPs block ICMP timestamps), fall back to RTT and cut only the direction whose achieved rate is near its shaper limit.</li>
+<li><b>Control law:</b> AIMD. If loaded delay rises above baseline by a threshold, cut that direction's rate multiplicatively at once. If the link is loaded and delay stays low, probe upward slowly. Baseline tracked by a slow EWMA.</li>
+<li><b>Failure:</b> reflectors silent → freeze at the last safe rate, lower confidence, never raise without fresh evidence.</li>
+<li><b>Success:</b> estimation error against the netem rate; time to settle after 100 → 20 Mbps; size of the delay spike; per-direction attribution accuracy.</li>
+</ul>
+
+<h3>Module 3: Experience Twin <span class="tag ai">AI 2</span> <span class="tag new">NEW</span></h3>
+<ul>
+<li><b>What:</b> a learned model that predicts the <b>next-10-second p95 delay of protected flows</b> (and bulk goodput) given the current state and a candidate action.</li>
+<li><b>Features:</b> per-tin backlog and drops, per-class demand, capacity estimate and trend, active intents, candidate action.</li>
+<li><b>Model:</b> LightGBM quantile regression (P50 and P90), small enough for router CPU.</li>
+<li><b>Training data:</b> collected <b>offline in the lab</b> by running randomised safe actions across all scenarios. No exploration happens on real users.</li>
+<li><b>Use:</b> before the safety gate, the controller scores every action in the safe menu. Actions whose predicted P90 call delay exceeds the target, or whose predicted bulk goodput falls below its floor, are dropped. The best remaining action goes to the live trial.</li>
+<li><b>Deterministic twin (baseline):</b> the same controller and safety gate without pre-screening.</li>
+<li><b>Success:</b> fewer harmful live trials and fewer <b>harm-seconds</b> (seconds a protected flow spends above its delay target) at equal or better p95 delay. Plus prediction error (pinball loss) on held-out runs.</li>
+<li><b>Honest limit:</b> trained in emulation, so there is a sim-to-real gap. The live trial and fast-abort still guard every change, and the Twin can only <i>remove</i> actions, never bypass the gate.</li>
+</ul>
+
+<h3>Module 4: Policy controller (slow loop)</h3>
+<ul>
+<li><b>Output:</b> a candidate policy bundle: flow-class → tin mapping, intent effects, HTB rate/ceil (variant), shaper margin.</li>
+<li><b>Method:</b> deterministic rules plus a small constrained optimiser over the fixed safe-action menu. It minimises C = α·L95 + β·J + γ·P + λ·F + μ·S, where each term is normalised by a fixed reference scale (e.g. 50 ms delay, 10 ms jitter, 1% loss, one switch per minute). L95, J and P are the p95 delay, jitter and loss of protected flows; F is a demand-aware shortfall below min(demand, floor); S counts switches.</li>
+<li><b>Stability:</b> hysteresis, a minimum hold time and a maximum number of changes per minute (slow loop only).</li>
+<li><b>Optional tuner (stretch):</b> a contextual bandit (LinUCB) choosing within the Twin-screened, validator-approved menu. It is kept only if it wins in A/B runs.</li>
+<li><b>Failure:</b> any exception → last known-good bundle.</li>
+</ul>
+
+<h3>Module 5: Intent manager (Focus Mode + Zero-click Focus) <span class="tag ai">AI 3</span></h3>
+<ul>
+<li><b>Manual intent:</b> <code>POST /intents {device, class, duration}</code>. Every intent auto-expires; the boosted class has a ceiling (hard in HTB, monitored in CAKE). Each device has a daily Fairness Budget of boosted minutes. Conflicting intents: the earlier one keeps priority and the user is told.</li>
+<li><b>Zero-click Focus</b> <span class="tag new">NEW</span>: when the conformal classifier emits a singleton Call-Audio/Call-Video set for a new flow while the link is loaded, the system creates a short intent (e.g. 10 min, renewed while the call lasts). It charges the device's Fairness Budget and shows "Protected your call · Undo".</li>
+<li><b>Baseline:</b> manual intent only.</li>
+<li><b>Success metric:</b> <b>time from call start to protection</b>; harm-seconds in the first minute of a call.</li>
+<li><b>Security</b> <span class="tag new">FIX</span>: the API listens on the LAN only. Each user has a paired device token; requests are rate-limited; the owner can revoke; every intent is audited. A device cannot extend its own boost past its budget.</li>
+<li><b>Identity:</b> device = MAC + DHCP lease + IPv6 neighbour entries (handles rotating IPv6 privacy addresses); flow = conntrack 5-tuple.</li>
+<li><b>Precedence:</b> active intent &gt; user correction &gt; classifier &gt; best effort.</li>
+<li><b>Failure:</b> intent store lost → drop all intents → neutral policy.</li>
+</ul>
+
+<h3>Module 6: Safety gate</h3>
+<ol>
+<li><b>Validate:</b> reject a candidate if floors exceed the shaped rate; any rate exceeds the capacity estimate; an intent ceiling or budget is exceeded; or the slow-loop hold time is not met.</li>
+<li><b>Apply and record</b> the whole bundle as one version. <code>tc -batch</code> is not atomic, so the controller reads the live state back after every apply. On any mismatch it rebuilds the last known-good bundle; if that also fails, the watchdog applies the neutral policy.</li>
+<li><b>Bounded live trial</b> (10–30 s) against the pre-change window. <span class="tag new">FIX</span> The trial is marked <i>inconclusive</i> if the capacity estimate, the active intents or the set of active flows changes materially during the trial.</li>
+<li><b>Fast abort:</b> roll back immediately if protected p95 delay exceeds its pre-change value by a margin in two consecutive 1 s windows, or interactive loss jumps past a threshold. Margins are calibrated on baseline runs.</li>
+<li><b>Decide:</b> keep only if protected metrics improved and bulk stayed above its floor or minimum-progress target.</li>
+<li><b>Watchdog:</b> a separate process; on a missing heartbeat it applies plain CAKE at a conservative rate.</li>
+</ol>
+<p class="muted">Streaming harm can be hidden by playback buffers for 10–30 s, so streaming is judged over a longer window using throughput sufficiency (is the stream receiving at least its observed bitrate).</p>
+
+<h3>Module 7: Telemetry, dashboard, audit, privacy</h3>
+<ul>
+<li><b>Charts:</b> latency (p50/p95/p99), jitter, loss, throughput, queue depth per tin, Jain's index, RPM. A "Why" panel for every decision shows the trigger, the Twin's prediction vs the measured outcome, the trial result, and keep or rollback.</li>
+<li><b>Privacy</b> <span class="tag new">FIX</span>: class-level metadata only; no payload, domains or SNI stored; short retention; per-device detail visible only to the account owner.</li>
+</ul>
+
+<h2>6. Linux implementation (corrected and checked against tc man pages)</h2>
+<h3>Class → tin mapping (CAKE diffserv4)</h3>
+<p>From tc-cake(8), diffserv4 has four tins: <b>Bulk</b> (CS1, LE; 6.25% threshold), <b>Best Effort</b> (100%), <b>Video</b> (AF4x, AF3x, CS3, AF2x, CS2, TOS4, TOS1; 50%) and <b>Voice</b> (CS7, CS6, EF, VA, CS5, CS4; 25%).</p>
+<table>
+<tr><th>PulseQoS class</th><th>DSCP written</th><th>CAKE tin</th><th>Why</th></tr>
+<tr><td>Call-Audio, Gaming</td><td>EF (46)</td><td>Voice</td><td>Small packets, latency-critical; well within 25%</td></tr>
+<tr><td>Call-Video <span class="tag new">FIX</span></td><td>AF41 (34)</td><td>Video</td><td>1–3 Mbps per call can exceed Voice's 25% threshold at 20 Mbps; matches WebRTC guidance (RFC 8837: audio EF, video AF4x)</td></tr>
+<tr><td>Streaming</td><td>AF31 (26)</td><td>Video</td><td>Buffered; needs throughput, not lowest delay</td></tr>
+<tr><td>Interactive-Web, Unknown</td><td>CS0 (0)</td><td>Best Effort</td><td>Never boosted on a guess</td></tr>
+<tr><td>Bulk</td><td>CS1 (8)</td><td>Bulk</td><td>Downloads, updates, backups</td></tr>
+</table>
+<p class="muted">Tin thresholds are soft: a tin over its threshold drops to lower priority for the excess, it is not capped. Hard per-class floors exist only in the HTB variant.</p>
+
+<h3>One mark, both directions <span class="tag new">FIX</span></h3>
+<ol>
+<li><b>Write:</b> when the classifier (or an intent) decides a flow's class, the controller stores it in the flow's conntrack mark: DSCP in bits 26–31 (mask <code>0xfc000000</code>) plus a "valid" flag bit <code>0x01000000</code>. Example for EF: (46 &lt;&lt; 26) | 0x01000000 = <code>0xb9000000</code>. Written with <code>conntrack -U … --mark</code> (or libnetfilter_conntrack).</li>
+<li><b>Upload:</b> a <code>ctinfo</code> action on the LAN interface ingress restores DSCP from the mark before routing. CAKE on WAN egress then picks the tin. <code>wash</code> clears our DSCP after queuing so it never leaks to the ISP.</li>
+<li><b>Download:</b> on WAN ingress, first <b>clear any DSCP set by the Internet</b> (<code>pedit … dsfield set 0 retain 0xfc</code>; IPv6 <code>traffic_class</code>), then restore ours with <code>ctinfo</code>, then redirect to IFB, where CAKE picks the tin. A remote sender marking EF therefore gains nothing.</li>
+</ol>
+<pre># Upload: CAKE on WAN egress
+tc qdisc replace dev wan0 root cake bandwidth 18mbit diffserv4 dual-srchost nat wash ack-filter ethernet
+tc qdisc add dev lan0 handle ffff: ingress
+tc filter add dev lan0 parent ffff: protocol all prio 10 matchall \
+   action ctinfo dscp 0xfc000000 0x01000000
+
+# Download: clear untrusted DSCP, restore ours, redirect to IFB, shape there
+ip link add ifb0 type ifb &amp;&amp; ip link set ifb0 up
+tc qdisc replace dev ifb0 root cake bandwidth 90mbit diffserv4 dual-dsthost nat ingress ethernet
+tc qdisc add dev wan0 handle ffff: ingress
+tc filter add dev wan0 parent ffff: protocol ip prio 10 matchall \
+   action pedit ex munge ip dsfield set 0 retain 0xfc pipe \
+   action ctinfo dscp 0xfc000000 0x01000000 pipe \
+   action mirred egress redirect dev ifb0
+tc filter add dev wan0 parent ffff: protocol ipv6 prio 11 matchall \
+   action pedit ex munge ip6 traffic_class set 0 retain 0xfc pipe \
+   action ctinfo dscp 0xfc000000 0x01000000 pipe \
+   action mirred egress redirect dev ifb0
+
+# Fast loop after a capacity drop (no trial, no hold time)
+tc qdisc change dev ifb0 root cake bandwidth 18mbit</pre>
+<p class="muted">Illustrative values; exact rates come from the controller. <code>ethernet</code> is a placeholder overhead keyword.</p>
+
+<h3>Link realism <span class="tag new">NEW</span></h3>
+<ul>
+<li><b>Overhead compensation:</b> set CAKE's overhead keyword for the access type (e.g. <code>ethernet</code>, <code>docsis</code>, <code>pppoe-ptm</code>, or explicit <code>overhead N mpu M</code> for PPPoE-over-fibre). Without it the shaper under-counts bytes and the queue moves to the modem.</li>
+<li><b>ACK filtering:</b> <code>ack-filter</code> on the upload of asymmetric links, so download ACKs don't crowd out call upload.</li>
+<li><b>GSO and offloads:</b> CAKE splits GSO super-packets by default (<code>split-gso</code>). In the HTB variant and in the lab, disable GRO/GSO/TSO on veth links (<code>ethtool -K</code>) so the emulation doesn't hide queueing.</li>
+<li><b>ECN:</b> CAKE uses ECN when available; run with ECN on and off and report both.</li>
+</ul>
+
+<h3>HTB variant (hard floors)</h3>
+<p>One HTB tree per direction with a class per category: <code>rate</code> = guaranteed floor, <code>ceil</code> = maximum, fq_codel leaves. The validator keeps the sum of floors below the shaped rate and scales them down when capacity drops. This variant gives the guarantees; the CAKE layout gives priority plus per-host fairness.</p>
+
+<h3>Known limits of a router-side shaper</h3>
+<ul>
+<li>Download shaping controls only the router's queue; ISP buffers are out of reach, which is why the shaper runs slightly below capacity.</li>
+<li>DSCP is used only inside the router; marks on the Internet are not relied on.</li>
+<li><b>VPN</b> <span class="tag new">NEW</span>: traffic inside one VPN tunnel is a single flow, so Focus Mode cannot separate a call inside it. Per-host fairness still applies; this is reported as a limitation.</li>
+</ul>
+
+<h3>Week-1 verification checklist (kernel behaviour we test, not assume)</h3>
+<ul>
+<li>The mark survives NAT, and <code>ctinfo</code> restores DSCP on LAN ingress and WAN ingress for IPv4 and IPv6.</li>
+<li>Inbound EF is cleared before restoration (abuse test S12).</li>
+<li>CAKE tin counters (<code>tc -s qdisc</code>) show each class in the intended tin.</li>
+<li>A rate change through <code>tc qdisc change</code> takes effect without dropping existing flows.</li>
+</ul>
+
+<h2>7. Where AI is used, and how it must earn its place</h2>
+<table>
+<tr><th>AI part</th><th>Technique</th><th>Deterministic twin</th><th>Must improve</th></tr>
+<tr><td>Traffic understanding</td><td>LightGBM + Mondrian conformal prediction</td><td>Port/hostname rules</td><td>Wrong-boost rate ≤ α, higher macro-F1, correct QUIC/unknown handling, time-to-classify</td></tr>
+<tr><td>Experience Twin</td><td>LightGBM quantile regression on offline lab data</td><td>Safety gate without pre-screen</td><td>Fewer harmful trials and harm-seconds at equal or better p95 delay</td></tr>
+<tr><td>Zero-click Focus</td><td>Conformal singleton call detection + budgeted auto-intent</td><td>Manual intent only</td><td>Shorter time-to-protection, fewer harm-seconds at call start</td></tr>
+<tr><td>Policy tuner (stretch)</td><td>Contextual bandit (LinUCB) inside the screened menu</td><td>Rule controller</td><td>Lower p95 delay or better bulk progress at equal fairness</td></tr>
+</table>
+<p>If an AI part does not beat its twin in repeated A/B runs, it is switched off and the result is reported. That rule itself is part of the pitch.</p>
+
+<h2>8. Data and ethics</h2>
+<ul>
+<li>Own captures: recorded only on the team's own devices and accounts, with consent. Only metadata features are kept; raw pcaps are not published.</li>
+<li>Public datasets: used only under their licences, listed in the licence table.</li>
+<li>Synthetic traffic: used for load and stress only, never as classifier ground truth.</li>
+</ul>
+
+<h2>9. Evaluation plan</h2>
+<p><b>Lab:</b> Linux network namespaces with real kernel networking: <i>home</i> (emulated devices), <i>router</i> (PulseQoS + tc), <i>isp</i> (token bucket + netem for rate, delay and loss). Every report is labelled emulation.</p>
+<p><b>Traffic:</b></p>
+<ul>
+<li>Call audio: about 50 packets/s, small packets.</li>
+<li><span class="tag new">FIX</span> Call video: 1–3 Mbps with frame bursts, both directions. Audio-only would hide the Voice-threshold issue.</li>
+<li>Gaming: small, high-rate UDP.</li>
+<li>Adaptive video: TCP bursts with idle gaps.</li>
+<li>Bulk: <code>iperf3</code> with multiple streams.</li>
+<li>Measurement: Flent RRUL, <code>irtt</code>, and RPM via <code>goresponsiveness</code> <span class="tag new">NEW</span>.</li>
+</ul>
+<h3>Baselines</h3>
+<table>
+<tr><th>#</th><th>System</th><th>Why</th></tr>
+<tr><td>1</td><td>FIFO, no QoS</td><td>Raw bufferbloat</td></tr>
+<tr><td>2</td><td>Static CAKE (diffserv4, fixed rate)</td><td>Strong standard AQM</td></tr>
+<tr><td>3</td><td>CAKE <code>autorate-ingress</code> <span class="tag new">NEW</span></td><td>CAKE's own built-in capacity estimation (tc-cake(8))</td></tr>
+<tr><td>4</td><td>CAKE + cake-autorate</td><td>Existing delay-based adaptive rate</td></tr>
+<tr><td>5</td><td>Static rules + CAKE (port/hostname)</td><td>Existing app-aware QoS</td></tr>
+<tr><td>6</td><td>PulseQoS deterministic core</td><td>Our system without AI</td></tr>
+<tr><td>7</td><td>PulseQoS + AI layer (conformal, Twin, zero-click)</td><td>Measures what the AI adds</td></tr>
+<tr><td>8</td><td>7 + bandit tuner (stretch)</td><td>Measures online learning</td></tr>
+</table>
+<h3>Scenarios</h3>
+<table>
+<tr><th>#</th><th>Scenario</th><th>Primary metrics</th></tr>
+<tr><td>S1</td><td>ISO download starts during a call</td><td>Call p95/p99 delay, jitter, loss; bulk goodput</td></tr>
+<tr><td>S2</td><td>WAN 100 → 20 Mbps</td><td>Settle time, delay-spike size, oscillation</td></tr>
+<tr><td>S3</td><td>Three TVs + gaming</td><td>Gaming p95, video sufficiency, Jain</td></tr>
+<tr><td>S4</td><td>Focus Mode under load</td><td>Before/after, floors held, expiry on time</td></tr>
+<tr><td>S5</td><td>Conflicting intents</td><td>Arbitration correctness, fairness</td></tr>
+<tr><td>S6</td><td>Bulk mislabelled as interactive</td><td>Wrong-boost duration, recovery after correction</td></tr>
+<tr><td>S7</td><td>Unknown QUIC/VPN flow</td><td>Abstention, no aggressive boost</td></tr>
+<tr><td>S8</td><td>Controller crash</td><td>Time to safe state</td></tr>
+<tr><td>S9</td><td>IPv4 vs IPv6</td><td>Parity</td></tr>
+<tr><td>S10 <span class="tag new">NEW</span></td><td>Call starts while a download is already running</td><td>Time-to-classify, time-to-protection, first-minute harm-seconds</td></tr>
+<tr><td>S11 <span class="tag new">NEW</span></td><td>Two video calls + gaming at 20 Mbps</td><td>Voice/Video tin behaviour, call p95</td></tr>
+<tr><td>S12 <span class="tag new">NEW</span></td><td>External flood pre-marked EF</td><td>Flood stays in Best Effort; call unaffected</td></tr>
+<tr><td>S13 <span class="tag new">NEW</span></td><td>Upload-only congestion (cloud backup)</td><td>Correct direction cut (OWD attribution)</td></tr>
+<tr><td>S14 <span class="tag new">NEW</span></td><td>Bad policy forced while capacity also drops</td><td>Inconclusive-trial handling, no wrong blame</td></tr>
+</table>
+<h3>Metrics</h3>
+<p>p50/p95/p99 delay, jitter and loss for interactive flows (end to end, from probes and generators); RPM; video throughput sufficiency; bulk goodput and completion time; Jain's index across hosts with similar demand; demand-aware shortfall; starvation events; capacity-estimate error; macro-F1, wrong-boost rate vs α, abstention, time-to-classify; harm-seconds; settle time; changes per minute; rollbacks; CPU and memory.</p>
+<h3>Protocol</h3>
+<p>At least 10 runs per scenario × system, with randomised order, fixed seeds and paired comparisons. We report medians with bootstrap 95% confidence intervals <i>of the difference</i> and effect sizes. All raw data, netem settings and scripts are committed. Where PulseQoS only ties a baseline, we report it.</p>
+
+<h2>10. Pilot result (measured 27 Oct 2026)</h2>
+<table>
+<tr><th>System (20 Mbit bottleneck, 4-stream download)</th><th>Call-probe p95</th><th>p99</th><th>Jitter</th><th>Download goodput</th></tr>
+<tr><td>FIFO (1000-packet queue)</td><td><b>138 ms</b> (128–152)</td><td>153 ms</td><td>8.5 ms</td><td>18.7 Mbps</td></tr>
+<tr><td>HTB class layout (interactive first, 10% bulk floor)</td><td><b>0.07 ms</b></td><td>0.10 ms</td><td>0.01 ms</td><td>18.7 Mbps</td></tr>
+</table>
+<p class="muted">5 paired runs, medians. Linux namespaces in a cloud container where netem, CAKE and fq_codel modules were unavailable, so: no WAN delay, ICMP probes as the call proxy, ideal classification. This shows the problem and the mechanism, not PulseQoS's advantage over CAKE, which is the Round 2 question. Scripts and raw data: <code>pulseqos/pilot/</code>.</p>
+
+<h2>11. Demo (about 4 minutes) and backup</h2>
+<ol>
+<li><b>Household at 100 Mbps:</b> all classes healthy.</li>
+<li><b>Download starts:</b> FIFO replay shows the call spiking; PulseQoS holds it. The "Why" panel explains the decision.</li>
+<li><b>ISP drops to 20 Mbps:</b> the fast loop cuts within a second, shown next to CAKE autorate on the same replay.</li>
+<li><b>A call starts on another laptop:</b> Zero-click Focus protects it ("Undo" visible). The Twin's predicted delay is shown beside the measured one.</li>
+<li><b>Break it:</b> force a bad policy; the Twin rejects it. Force it past the Twin; the fast-abort rolls it back. Kill the controller; the watchdog restores the safe state.</li>
+<li><b>One command</b> produces the comparison report with confidence intervals.</li>
+</ol>
+<p><span class="tag new">NEW</span> A recorded backup video of the same run is kept, in case the live environment (root access, kernel modules) is unavailable on demo day.</p>
+
+<h2>12. Tough judge questions</h2>
+<p><b>Where is the AI, really?</b> In three places, each with a number it must beat: the conformal classifier (wrong-boost rate bound), the Experience Twin (harm-seconds avoided before users feel them) and Zero-click Focus (time-to-protection). Each is compared with a deterministic twin and switched off if it loses.</p>
+<p><b>Why not an LLM?</b> The case study says AI must improve a measurable outcome, not add a conversational interface. A natural-language intent box could be added on top later; it is not where the value is.</p>
+<p><b>CAKE already works. Why PulseQoS?</b> We run on CAKE and benchmark against CAKE, its autorate and cake-autorate. CAKE has no notion of user intent, doesn't predict or verify its own changes, and doesn't bound classification mistakes.</p>
+<p><b>Can the classifier be fooled or wrong?</b> Yes. Uncertain flows abstain to Unknown, the wrong-boost rate is bounded and monitored, users can correct labels, and external DSCP marks are ignored.</p>
+<p><b>Is the bounded trial an experiment on users?</b> Yes, and that's why the Twin screens first, the trial is short, the fast-abort reacts in about two seconds, and the watchdog guarantees a safe fallback.</p>
+<p><b>What changes for a product?</b> Router hardware, hardware flow offload (which can bypass shaping), CPU for gigabit shaping, Wi-Fi airtime fairness, a security review of the intent API, and certification and scale testing.</p>
+
+<h2>13. Risks and limitations</h2>
+<table>
+<tr><th>Risk</th><th>Mitigation</th></tr>
+<tr><td>Classifier weak on new apps, QUIC, VPN</td><td>Conformal abstention, drift monitor, deterministic fallback, user correction</td></tr>
+<tr><td>Twin wrong outside the lab (sim-to-real)</td><td>It can only remove actions; live trial + fast-abort still decide; prediction error reported</td></tr>
+<tr><td>CAKE alone already very good</td><td>Honest comparison; claims focused on intents, capacity changes and safety</td></tr>
+<tr><td>Policy flapping</td><td>Slow-loop hysteresis, hold time, change budget; fast loop only cuts quickly</td></tr>
+<tr><td>Bulk starvation</td><td>HTB floors; CAKE minimum-progress monitoring; Fairness Budget</td></tr>
+<tr><td>Fast-abort misfires on noise</td><td>Two consecutive windows; margins tuned on baseline runs</td></tr>
+<tr><td>Wrong-direction rate cut</td><td>One-way delay; load-based attribution fallback</td></tr>
+<tr><td>DSCP abuse from the Internet</td><td>Clear then restore on ingress; abuse test S12</td></tr>
+<tr><td>Intent API abuse</td><td>LAN-only, per-user tokens, rate limits, budgets, audit</td></tr>
+<tr><td>Overstated QoE claims</td><td>Network-level proxies only, clearly labelled; no MOS claim</td></tr>
+<tr><td>Emulation ≠ real Wi-Fi homes</td><td>Labelled; optional OpenWrt run as a stretch goal</td></tr>
+<tr><td>Router CPU</td><td>Small models, batched telemetry, CPU reported as a metric</td></tr>
+<tr><td>Demo environment fails</td><td>Recorded backup video</td></tr>
+</table>
+
+<h2>14. Tech stack and Round 2 plan</h2>
+<table>
+<tr><th>Component</th><th>Technology</th></tr>
+<tr><td>Emulation</td><td>Linux network namespaces, netem, token-bucket shaping; Ubuntu 24.04 VM with root</td></tr>
+<tr><td>Enforcement</td><td>tc: CAKE, IFB, HTB + fq_codel; actions ctinfo, pedit, mirred; conntrack-tools</td></tr>
+<tr><td>Telemetry</td><td>conntrack, tc -s, libpcap/eBPF sampling, tsping/irtt probes</td></tr>
+<tr><td>AI</td><td>Python, LightGBM, scikit-learn; conformal prediction (MAPIE or own implementation)</td></tr>
+<tr><td>Controller and API</td><td>Python, FastAPI</td></tr>
+<tr><td>Benchmarking</td><td>iperf3, Flent (RRUL), irtt, goresponsiveness</td></tr>
+<tr><td>Dashboard</td><td>React + Vite, Recharts</td></tr>
+<tr><td>Storage and tests</td><td>SQLite + JSON/CSV artifacts; pytest; scripted namespace resets</td></tr>
+</table>
+<table>
+<tr><th>Week</th><th>Goal</th></tr>
+<tr><td>1</td><td>Namespace lab, traffic generators (incl. call video), baselines 1–5, verification checklist (section 6)</td></tr>
+<tr><td>2</td><td>Fast loop with OWD, slow-loop controller, intents, validator, rollback, watchdog</td></tr>
+<tr><td>3</td><td>Conformal classifier on real captures, Experience Twin (offline data + model), Zero-click Focus, dashboard and audit</td></tr>
+<tr><td>4</td><td>Full scenarios S1–S14 with repeated runs, report generation, deck, demo and backup video</td></tr>
+</table>
+<p class="muted">Confirm the Round 2 dates on the portal before quoting them. Scope order: core (deterministic) must be reliable before the AI layer; the bandit tuner and OpenWrt run are stretch goals.</p>
+
+<h2>15. Changes from v1</h2>
+<table>
+<tr><th>#</th><th>Change</th><th>Type</th></tr>
+<tr><td>1</td><td>Two-speed control; rate cuts exempt from trial and hold time; inconclusive-trial rule</td><td>Correctness</td></tr>
+<tr><td>2</td><td>Call video moved to the Video tin (25% Voice threshold; RFC 8837)</td><td>Correctness</td></tr>
+<tr><td>3</td><td>Untrusted inbound DSCP cleared before restoring our mark</td><td>Security</td></tr>
+<tr><td>4</td><td>Specified how the conntrack mark is written and restored in both directions</td><td>Correctness</td></tr>
+<tr><td>5</td><td>One-way delay for per-direction capacity estimation</td><td>Correctness</td></tr>
+<tr><td>6</td><td>Overhead compensation, ACK filter, GSO/offload handling, ECN</td><td>Correctness</td></tr>
+<tr><td>7</td><td>CAKE autorate-ingress added as a baseline</td><td>Evaluation</td></tr>
+<tr><td>8</td><td>Classifier trained on real captures; time-to-classify; RPM; paired bootstrap statistics</td><td>Evaluation</td></tr>
+<tr><td>9</td><td>Five new scenarios (S10–S14)</td><td>Evaluation</td></tr>
+<tr><td>10</td><td>Intent API security; household privacy; VPN limitation</td><td>Security / privacy</td></tr>
+<tr><td>11</td><td>AI layer: conformal classifier, Experience Twin, Zero-click Focus, each with a deterministic twin</td><td>Differentiation</td></tr>
+<tr><td>12</td><td>Six-layer architecture view; expected-output checklist; backup demo video</td><td>Submission</td></tr>
+<tr><td>13</td><td>Measured pilot added</td><td>Evidence</td></tr>
+</table>
+
+<h2>16. Sources</h2>
+<ul class="muted">
+<li>Tata Elxsi TELIPORT S4, Case Study 3 PDF (constraints, expected output, evaluation criteria)</li>
+<li>tc-cake(8), tc-ctinfo(8), tc-pedit(8): iproute2 manual pages (tin thresholds, wash, nat, dual-host modes, overhead keywords, split-gso, autorate-ingress, ctinfo DSCP restore, pedit dsfield)</li>
+<li>RFC 8837: DSCP Packet Markings for WebRTC QoS</li>
+<li>IETF IPPM draft: Responsiveness under Working Conditions (RPM); goresponsiveness client</li>
+<li>cake-autorate and tsping (OpenWrt community); qosify; LibreQoS</li>
+<li>Vovk, Gammerman, Shafer: Algorithmic Learning in a Random World (conformal prediction); Angelopoulos &amp; Bates, A Gentle Introduction to Conformal Prediction</li>
+<li>ISCX VPN-nonVPN 2016 (UNB CIC); CESNET-QUIC22: check licences before use</li>
+</ul>
+</body>
+</html>

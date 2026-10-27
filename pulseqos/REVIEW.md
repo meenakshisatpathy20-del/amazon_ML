@@ -66,3 +66,18 @@ sudo bash pulseqos/pilot/pilot.sh htb 1 <outdir>
 python3 pulseqos/pilot/analyze.py <outdir>
 ```
 Needs `iproute2` and `iperf3`. The raw results are in `pulseqos/pilot/results/`.
+
+## F. Second review pass: more gaps (all fixed in `design/PulseQoS_Design_v2.pdf`)
+
+| # | Gap | Fix in v2 |
+|---|-----|-----------|
+| 12 | No link-layer overhead compensation, so the shaper under-counts bytes and the queue moves to the modem | CAKE overhead keyword per access type (`ethernet`, `docsis`, `pppoe-ptm`, or explicit `overhead`/`mpu`) |
+| 13 | Download ACKs crowd the upload on asymmetric links | `ack-filter` on upload CAKE |
+| 14 | veth GRO/GSO/TSO in the lab can hide queueing | CAKE `split-gso` (default); disable offloads with `ethtool -K` in the HTB variant and lab |
+| 15 | Missing baseline: CAKE's built-in `autorate-ingress` (tc-cake(8)) | Added as baseline 3 |
+| 16 | A trial can be confounded when intents or the flow set change mid-trial, not only capacity | Trial marked inconclusive on any material state change (scenario S14) |
+| 17 | VPN tunnels hide inner flows | Stated as a limitation; per-host fairness still applies |
+| 18 | Expected-output items (setup guide with versions, scripted demo reset, limitations) not mapped | Expected-output checklist table in v2 section 3 |
+| 19 | Live demo depends on root and kernel modules | Recorded backup video |
+| 20 | "Where is the AI?" is weak: one classifier plus an optional bandit | AI layer: conformal classifier with a wrong-boost bound, Experience Twin pre-screening, Zero-click Focus; each against a deterministic twin |
+| 21 | Gaps 1–4 needed exact commands | v2 section 6 gives the `ctinfo`/`pedit`/`mirred` pipeline, checked against tc-ctinfo(8) and tc-pedit(8), plus a week-1 kernel verification list |
